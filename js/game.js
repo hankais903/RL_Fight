@@ -278,26 +278,39 @@ function updatePlayer(dt) {
     const targets = nearestEnemies(p.range, p.multi);
     if (targets.length) {
       p.punchT = rate;
-      for (const t of targets) launchPunch(t, rate);
+      p.strikeN = (p.strikeN || 0) + 1;
+      // 每第 6 招是組合技收尾：飛踢，目標改成範圍內（放寬 30%）最遠的敵人，飛得更遠
+      if (p.strikeN % 6 === 0) {
+        let far = null, fd = -1;
+        for (const e of run.enemies) {
+          if (e.dead) continue;
+          const d = Math.hypot(e.x, e.y) - e.r;
+          if (d <= p.range * 1.3 && d > fd) { fd = d; far = e; }
+        }
+        launchPunch(far || targets[0], rate, true);
+        p.punchT = rate * 1.6; // 收尾招稍微多一點時間
+      } else for (const t of targets) launchPunch(t, rate);
     }
   }
   for (const pu of p.punches) {
     pu.t += dt;
     if (!pu.target.dead) { pu.tx = pu.target.x; pu.ty = pu.target.y; }
-    if (!pu.hit && pu.t >= pu.dur * pu.hitFrac) { pu.hit = true; pu.impact = true; punchHit(pu.target); }
+    if (!pu.hit && pu.t >= pu.dur * pu.hitFrac) { pu.hit = true; pu.impact = true; punchHit(pu.target, pu); }
   }
   p.punches = p.punches.filter(pu => pu.t < pu.dur);
 }
 
-function launchPunch(target, rate) {
+function launchPunch(target, rate, finisher = false) {
   const p = run.p;
   p.armSide = -p.armSide;
   p.facing = Math.atan2(target.y, target.x);
-  p.punches.push({ target, tx: target.x, ty: target.y, side: p.armSide, t: 0, dur: Math.min(0.32, rate * 0.9), hitFrac: 0.5, hit: false });
+  const dur = finisher ? Math.min(0.45, rate * 1.4) : Math.min(0.32, rate * 0.9);
+  p.punches.push({ target, tx: target.x, ty: target.y, side: p.armSide, t: 0, dur, hitFrac: finisher ? 0.6 : 0.5, hit: false, finisher });
   SFX.swing();
 }
 
-function punchHit(e) {
+function punchHit(e, pu) {
+  if (pu && pu.finisher) finisherBlast(e);
   if (e.dead) return;
   if (e.bottle) {
     e.dead = true;
@@ -337,6 +350,30 @@ function punchHit(e) {
   }
 }
 
+// 組合技收尾（飛踢）：目標周圍範圍傷害，大幅擊飛
+function finisherBlast(e) {
+  const x = e.x, y = e.y, R = 85;
+  const dmg = pDmg() * 3;
+  run.fx.push({ kind: 'flash', x, y, h: 30, size: 1.6, life: 0.08, max: 0.08 });
+  run.fx.push({ kind: 'ring', x, y, r: 10, maxR: R * 1.4, life: 0.4, max: 0.4, color: '#ffd23a', w: 12 });
+  run.fx.push({ kind: 'ring', x, y, r: 5, maxR: R, life: 0.3, max: 0.3, color: '#ffffff', w: 8 });
+  run.fx.push({ kind: 'crack', x, y, rot: rand(0, Math.PI * 2), size: 120, life: 1.6, max: 1.6 });
+  for (let i = 0; i < 30; i++) {
+    const a = rand(0, Math.PI * 2), sp = rand(150, 500);
+    run.fx.push({ kind: 'dot', x, y, z: 10, vz: rand(100, 400), vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, size: 7, color: Math.random() < 0.5 ? '#ffd23a' : '#ffffff', life: 0.5, max: 0.5 });
+  }
+  run.shake = Math.max(run.shake, 20);
+  run.zoom = Math.max(run.zoom, 0.07);
+  run.hitstop = Math.max(run.hitstop, 0.13);
+  run.flash = Math.max(run.flash, 0.08);
+  SFX.boom();
+  addComic(x, y, Math.atan2(y, x));
+  for (const o of run.enemies) {
+    if (o.dead || o === e) continue;
+    if (dist2(o, e) < (R + o.r) ** 2) damageEnemy(o, dmg, { dir: Math.atan2(o.y - y, o.x - x), kb: 520 });
+  }
+}
+
 function damageEnemy(e, amount, o = {}) {
   if (e.dead) return 0;
   let a = amount;
@@ -352,8 +389,8 @@ function damageEnemy(e, amount, o = {}) {
     e.vy += Math.sin(o.dir) * k;
   }
   if (run.p.lifesteal && a > 0) run.p.hp = Math.min(run.p.maxHp, run.p.hp + a * run.p.lifesteal);
-  if (o.show || o.crit || a >= pDmg() * 3) {
-    if (run.texts.length < 70) addText(e.x + rand(-6, 6), e.y, o.crit ? fmt(a) + '!' : fmt(a), o.crit ? '#ffd23a' : '#ffffff', o.crit ? 30 : 20);
+  if (o.show || o.crit) {
+    if (run.texts.length < 40) addText(e.x + rand(-6, 6), e.y, o.crit ? fmt(a) + '!' : fmt(a), o.crit ? '#ffd23a' : '#ffffff', o.crit ? 30 : 20);
   }
   e.squash = 0.12;
   if (o.punch) {
@@ -487,7 +524,7 @@ function chainLightning(start, jumps, dmg, fromPunch) {
 
 function hurtPlayer(d) {
   const p = run.p;
-  if (state !== 'play') return;
+  if (state !== 'play' || run.god) return;
   if (p.shield > 0) {
     p.shield = 0; p.shieldT = 6;
     run.fx.push({ kind: 'ring', x: 0, y: 0, r: 10, maxR: 40, life: 0.25, max: 0.25, color: '#7cc8ff', w: 4 });
@@ -1495,7 +1532,14 @@ function frame(now) {
 }
 
 // 測試用掛鉤
-window.__rlfight = { get state() { return state; }, get run() { return run; }, startRun, pick, useUlt };
+// 測試用掛鉤：大批敵人、無敵
+window.__rlfight = {
+  get state() { return state; }, get run() { return run; }, startRun, pick, useUlt,
+  spawnMany(n, types = ['grunt', 'grunt', 'runner', 'tank', 'charger', 'spore', 'bomber', 'drummer']) {
+    for (let i = 0; i < n; i++) spawnEnemy(types[i % types.length]);
+  },
+  god(on = true) { run.god = on; },
+};
 
 R3D.init(document.getElementById('world'), { ARENA, PLAYER_R });
 resize();

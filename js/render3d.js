@@ -27,7 +27,7 @@ function buildGeometries() {
   GEO.body.translate(0, 0.62, 0);
   GEO.head = new THREE.SphereGeometry(0.55, 16, 12);
   GEO.fist = new THREE.SphereGeometry(0.36, 12, 10);
-  GEO.unitSphere = new THREE.SphereGeometry(1, 12, 10);
+  GEO.unitSphere = new THREE.SphereGeometry(1, 10, 7);
   GEO.arm = new THREE.CylinderGeometry(1, 1, 1, 10);
   GEO.ring = new THREE.RingGeometry(0.86, 1, 64);
   GEO.ringThin = new THREE.RingGeometry(0.975, 1, 96);
@@ -147,6 +147,11 @@ R3D.resize = (w, h, dpr) => {
 };
 
 // 世界座標 → 螢幕座標（給 2D 介面用）
+// 測試用：主角是否在飛踢中
+R3D.debugPlayer = () => ({ f: player.userData.flight && { D: player.userData.flight.D, t0: player.userData.flight.t0, th: player.userData.flight.theta, name: player.userData.flight.name }, at: player.userData.anim.t, ti: player.userData.impactClipT, x: player.position.x, y: player.position.y, z: player.position.z, flying: !!player.userData.flight, tilt: 2 * Math.acos(Math.min(1, Math.abs(player.userData.lean.quaternion.w))) * 180 / Math.PI });
+// 測試用：每格繪製次數與三角形數
+R3D.stats = () => ({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles });
+
 R3D.project = (x, y, h = 0) => {
   tmpV.set(x, h, y).project(camera);
   return { x: (tmpV.x + 1) / 2 * SW, y: (1 - tmpV.y) / 2 * SH, visible: tmpV.z < 1 };
@@ -343,9 +348,9 @@ const LOOKS = {
   boss_summon: { skin: '#e0b090', shirt: '#2d2d3a', pants: '#1a1a22', hair: '#111111', wide: 1.2, crown: true, shades: true, chain: true },
 };
 
-function capsuleGeo(r, h, seg = 12) {
+function capsuleGeo(r, h, seg = 8) {
   const pts = [];
-  const N = 5;
+  const N = 3;
   for (let i = 0; i <= N; i++) { const a = -Math.PI / 2 + (i / N) * Math.PI / 2; pts.push(new THREE.Vector2(Math.max(0.001, Math.cos(a) * r), -h / 2 + Math.sin(a) * r)); }
   for (let i = 0; i <= N; i++) { const a = (i / N) * Math.PI / 2; pts.push(new THREE.Vector2(Math.max(0.001, Math.cos(a) * r), h / 2 + Math.sin(a) * r)); }
   return new THREE.LatheGeometry(pts, seg);
@@ -353,13 +358,13 @@ function capsuleGeo(r, h, seg = 12) {
 const geoCache = {};
 function segGeo(key, r, len) {
   const k = key + r.toFixed(3);
-  if (!geoCache[k]) { const g = capsuleGeo(r, Math.max(0.01, len - r * 1.2), 10); g.translate(0, len / 2, 0); geoCache[k] = g; }
+  if (!geoCache[k]) { const g = capsuleGeo(r, Math.max(0.01, len - r * 1.2), 8); g.translate(0, len / 2, 0); geoCache[k] = g; }
   return geoCache[k];
 }
 function buildRigGeometries() {
-  GEO.rhead = new THREE.SphereGeometry(1, 16, 12);
-  GEO.hair = new THREE.SphereGeometry(1.05, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.42);
-  GEO.eye = new THREE.SphereGeometry(1, 8, 6);
+  GEO.rhead = new THREE.SphereGeometry(1, 12, 9);
+  GEO.hair = new THREE.SphereGeometry(1.05, 12, 5, 0, Math.PI * 2, 0, Math.PI * 0.42);
+  GEO.eye = new THREE.SphereGeometry(1, 5, 4);
   GEO.cap = new THREE.SphereGeometry(1, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.5);
   GEO.band = new THREE.TorusGeometry(1, 0.12, 6, 20);
 }
@@ -490,8 +495,74 @@ function createRig(look, opt = {}) {
   if (look.chain) { const c = acc(GEO.band, lambert('#ffd84a', { emissive: 0x443300 }), chest, 0, 0.15, 0.12, 0.2, 0.2, 0.2); c.rotation.x = 1.2; }
 
   root.userData = { bones, lean, head, mats, anim: newAnim(), hairMesh: hair };
+  if (opt.crowd) {
+    // 群體角色：零件不自己畫，改由實例化批次一起畫（見 crowdAdd）
+    const parts = [];
+    root.traverse(o => {
+      if (!o.isMesh || !o.visible) return;
+      parts.push(o);
+      o.userData.batchKey = o.geometry.uuid + (o.material.isMeshBasicMaterial ? '|b' : '|l');
+      o.userData.shadow = o.castShadow;
+      o.visible = false;
+    });
+    root.userData.parts = parts;
+    root.userData.crowd = true;
+  }
   scene.add(root);
   return root;
+}
+
+// ---------- 實例化批次：大量敵人只用少數幾次繪製 ----------
+const CROWD_CAP = 600;
+const batches = new Map();
+const batchWhiteL = new THREE.MeshLambertMaterial({ color: '#ffffff' });
+const batchWhiteB = new THREE.MeshBasicMaterial({ color: '#ffffff' });
+const BURN = new THREE.Color('#ff7a30'), DARK = new THREE.Color('#2a2833'), FLASH = new THREE.Color('#ffffff');
+function getBatch(o) {
+  let b = batches.get(o.userData.batchKey);
+  if (!b) {
+    const basicMat = o.material.isMeshBasicMaterial;
+    const m = new THREE.InstancedMesh(o.geometry, basicMat ? batchWhiteB : batchWhiteL, CROWD_CAP);
+    m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    m.castShadow = !!o.userData.shadow;
+    m.frustumCulled = false;
+    // 注意：setColorAt 會依「目前的 count」配置顏色空間，所以要先用最大容量建立
+    m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(CROWD_CAP * 3), 3);
+    m.instanceColor.setUsage(THREE.DynamicDrawUsage);
+    m.count = 0;
+    scene.add(m);
+    b = { mesh: m, n: 0 };
+    batches.set(o.userData.batchKey, b);
+  }
+  return b;
+}
+function crowdBegin() { for (const b of batches.values()) b.n = 0; }
+function crowdAdd(g) {
+  g.updateMatrixWorld(true);
+  const t = g.userData.tint || {};
+  for (const o of g.userData.parts) {
+    const b = getBatch(o);
+    if (b.n >= CROWD_CAP) continue;
+    b.mesh.setMatrixAt(b.n, o.matrixWorld);
+    tmpColor.copy(o.material.userData.base || o.material.color);
+    if (!o.material.isMeshBasicMaterial) {
+      if (t.flash) tmpColor.copy(FLASH);
+      else {
+        if (t.frozen) tmpColor.lerp(ICE, 0.7);
+        if (t.burn) tmpColor.lerp(BURN, 0.35 + Math.random() * 0.2);
+      }
+    } else if (o.material.color) tmpColor.copy(o.material.color);
+    if (t.fade) tmpColor.lerp(DARK, t.fade);
+    b.mesh.setColorAt(b.n, tmpColor);
+    b.n++;
+  }
+}
+function crowdEnd() {
+  for (const b of batches.values()) {
+    b.mesh.count = b.n;
+    b.mesh.instanceMatrix.needsUpdate = true;
+    if (b.mesh.instanceColor) b.mesh.instanceColor.needsUpdate = true;
+  }
 }
 
 // ---------- 動畫播放器（片段內插、交叉淡入） ----------
@@ -573,7 +644,7 @@ function getEnemyMesh(e) {
   const pool = enemyPool[e.type] || (enemyPool[e.type] = []);
   g = pool.pop();
   if (!g) {
-    g = createRig(LOOKS[e.type] || LOOKS.grunt);
+    g = createRig(LOOKS[e.type] || LOOKS.grunt, { crowd: true });
     g.userData.type = e.type;
   }
   g.visible = true;
@@ -638,15 +709,16 @@ function updateEnemy(e, g, t, dt) {
   // 受擊後仰（以腳為支點）
   u.lean.rotation.z = (u.reacting ? 0 : hitK * 0.3) - (wind ? 0.25 : 0);
   if (e.squash > 0) { const q = e.squash / 0.12; g.scale.set(S * (1 + 0.12 * q), S * (1 - 0.15 * q), S * (1 + 0.12 * q)); }
-  setRigLook(g, { frozen, burn: !!e.burn, flash: e.flash > 0 || (wind && Math.floor(t * 16) % 2 === 0) });
+  u.tint = { frozen, burn: !!e.burn, flash: e.flash > 0 || (wind && Math.floor(t * 16) % 2 === 0) };
   if (u.fuse) u.fuse.material.color.set(Math.floor(t * 12) % 2 ? '#ffe14a' : '#ff5a1f');
 
   // 護盾
   if (e.shield > 0) {
-    if (!u.shieldMesh) { u.shieldMesh = new THREE.Mesh(GEO.unitSphere, basic('#5fa8ff', { opacity: 0.28 })); scene.add(u.shieldMesh); }
+    // 護盾：腳下的藍色光環（大批敵人時不會糊成一片）
+    if (!u.shieldMesh) { u.shieldMesh = new THREE.Mesh(GEO.ring, basic('#5fa8ff', { opacity: 0.75, blending: THREE.AdditiveBlending })); u.shieldMesh.rotation.x = -Math.PI / 2; scene.add(u.shieldMesh); }
     u.shieldMesh.visible = true;
-    u.shieldMesh.position.set(e.x, S * 1.2, e.y);
-    u.shieldMesh.scale.setScalar(S * 1.25);
+    u.shieldMesh.position.set(e.x, 2, e.y);
+    u.shieldMesh.scale.setScalar(r * 1.5);
   } else if (u.shieldMesh) u.shieldMesh.visible = false;
   // 減速圈
   if (e.slowT > 0 && !frozen) {
@@ -689,7 +761,7 @@ function updateBodies(bodies, dt) {
   for (const b of bodies) {
     let g = bodyMap.get(b);
     if (!g) {
-      g = bodyPool.pop() || createRig(GRAY_LOOK);
+      g = bodyPool.pop() || createRig(GRAY_LOOK, { crowd: true });
       g.visible = true;
       bodyMap.set(b, g);
       const u = g.userData;
@@ -711,7 +783,10 @@ function updateBodies(bodies, dt) {
     g.position.set(b.x, Math.max(0, b.z), b.y);
     // 打得特別重的會在空中多轉一圈
     if (u.spin && b.z > 1) u.lean.rotation.y += u.spin * dt * 12;
-    setRigLook(g, { opacity: Math.min(1, b.life / 0.6) });
+    // 消失前沉入地面並變暗（實例化無法個別透明）
+    const fade = 1 - Math.min(1, b.life / 0.6);
+    if (fade > 0) g.position.y -= fade * S * 0.8;
+    u.tint = { fade: fade * 0.9 };
   }
 }
 
@@ -747,15 +822,22 @@ function wpick(list) { let t = 0; for (const [, w] of list) t += w; let r = Math
 function clipFor(kind, s) { return CLIPS_BY[kind + s] || CLIPS_BY[kind + (s === 'R' ? 'L' : 'R')]; }
 // 連續出拳時依套路一招接一招，最後以飛踢收尾；一套打完換下一套
 const COMBOS = [
-  ['straightL', 'straightR', 'hookL', 'upperR', 'roundR', 'flyL'],
-  ['hookR', 'hookL', 'upperR', 'straightL', 'sideR', 'flyR'],
-  ['straightR', 'upperL', 'hookR', 'frontL', 'roundL', 'flyR'],
-  ['straightL', 'hookR', 'upperL', 'straightR', 'sideL', 'flyL'],
-  ['upperR', 'hookL', 'straightR', 'hookL', 'roundR', 'flyR'],
+  ['straightL', 'straightR', 'hookL', 'upperR', 'roundR'],
+  ['hookR', 'hookL', 'upperR', 'straightL', 'sideR'],
+  ['straightR', 'upperL', 'hookR', 'frontL', 'roundL'],
+  ['straightL', 'hookR', 'upperL', 'straightR', 'sideL'],
+  ['upperR', 'hookL', 'straightR', 'hookL', 'roundR'],
 ];
-function comboMove(u, now) {
+function comboMove(u, now, finisher) {
   if (!u.combo || now - u.combo.last > 1.4) u.combo = { route: pick(COMBOS), step: 0, last: now };
   const c = u.combo;
+  if (finisher) {
+    // 收尾：飛踢，然後換下一套
+    c.last = now;
+    c.route = pick(COMBOS.filter(r => r !== c.route)); c.step = 0;
+    const name = pick(CLIPS_BY['fly' + (Math.random() < 0.5 ? 'R' : 'L')]);
+    return [name, /L\d+$/.test(name) ? JI.LeftFoot : JI.RightFoot, true];
+  }
   if (c.step >= c.route.length) { c.route = pick(COMBOS.filter(r => r !== c.route)); c.step = 0; }
   const key = c.route[c.step++];
   c.last = now;
@@ -763,7 +845,7 @@ function comboMove(u, now) {
   const name = pick(clipFor(kind, s));
   const foot = ['fly', 'round', 'side', 'front'].includes(kind);
   const left = /L\d+$/.test(name);
-  return [name, foot ? (left ? JI.LeftFoot : JI.RightFoot) : (left ? JI.LeftHand : JI.RightHand), c.step === c.route.length];
+  return [name, foot ? (left ? JI.LeftFoot : JI.RightFoot) : (left ? JI.LeftHand : JI.RightHand), false];
 }
 function chooseMove(side, kickChance) {
   const s = side > 0 ? 'R' : 'L';
@@ -793,7 +875,18 @@ function strikeOffset(name, limb) {
   probe.updateMatrixWorld(true);
   probe.userData.bones[limb].getWorldPosition(tmpW);
   limbAngle[key] = Math.atan2(tmpW.z, tmpW.x);
+  const hips = new THREE.Vector3();
+  probe.userData.bones[JI.Hips].getWorldPosition(hips);
+  limbPose[key] = { hips, vec: tmpW.clone().sub(hips) };
   return limbAngle[key];
+}
+const limbPose = {};
+const QI = new THREE.Quaternion();
+const smooth = x => x * x * (3 - 2 * x);
+// 限制旋轉角度（避免整個人翻過頭）
+function clampTilt(q, maxDeg) {
+  const ang = 2 * Math.acos(Math.min(1, Math.abs(q.w))) * 180 / Math.PI;
+  return ang <= maxDeg ? q : new THREE.Quaternion().slerp(q, maxDeg / ang);
 }
 function updatePlayer(p, t, hurt, elements, dt, run) {
   const S = PLAYER_R * RIG_SCALE;
@@ -814,9 +907,11 @@ function updatePlayer(p, t, hurt, elements, dt, run) {
   for (const pu of p.punches) {
     if (u.seen.has(pu)) continue;
     u.seen.add(pu);
+    // 飛踢在空中時不被打斷：之後的拳照樣命中、照樣放拳勁，但身體把飛踢做完
+    if (u.flight) continue;
     u.count++;
     const crit = run && run.comboPop > 0.1 && Math.random() < 0.15;
-    const [name, limb, finisher] = comboMove(u, t);
+    const [name, limb, finisher] = comboMove(u, t, !!pu.finisher);
     u.finisher = finisher;
     const c = CL[name];
     const ti = c.impact / c.fps;
@@ -831,6 +926,22 @@ function updatePlayer(p, t, hurt, elements, dt, run) {
     u.yaw = u.faceYaw; // 出招瞬間直接轉到位
     u.pending = pu;
     u.pendingName = name;
+    u.flight = null;
+    if (name.startsWith('fly')) {
+      strikeOffset(name, limb);
+      const lp = limbPose[name + ':' + limb];
+      const ang = limbAngle[name + ':' + limb];
+      const dir = new THREE.Vector3(Math.cos(ang), -0.08, Math.sin(ang)).normalize();
+      const dist = Math.hypot(pu.tx, pu.ty);
+      const reach = lp.vec.length() * S;
+      u.flight = {
+        name, t0, theta: Math.atan2(pu.ty, pu.tx),
+        D: Math.max(0, Math.min(170, dist - reach * 0.9 - (pu.target && pu.target.r ? pu.target.r : 15))),
+        H: 26,
+        R: clampTilt(new THREE.Quaternion().setFromUnitVectors(lp.vec.clone().normalize(), dir), 85),
+        pivot: lp.hips.clone(),
+      };
+    }
   }
   // 命中前持續追蹤目標（敵人還在移動）
   if (u.pending && !u.pending.impact) {
@@ -872,6 +983,28 @@ function updatePlayer(p, t, hurt, elements, dt, run) {
       }
       qiFx.push({ x1: tmpW.x, y1: tmpW.y, z1: tmpW.z, x2: tx, y2: ty, z2: tz, life: 0.12, max: 0.12 });
     }
+  }
+  // 飛踢：整個人沿弧線飛向敵人、身體轉成水平，命中後飛回中央
+  {
+    const f = u.flight;
+    let w = 0, off = 0, h = 0;
+    if (f && a.cur === f.name) {
+      const ti = u.impactClipT;
+      if (a.t < ti) {
+        const pr = Math.min(1, Math.max(0, (a.t - f.t0) / Math.max(0.01, ti - f.t0)));
+        w = smooth(pr); off = f.D * (1 - (1 - pr) * (1 - pr)); h = f.H * Math.sin(pr * Math.PI / 2);
+      } else {
+        const r = Math.min(1, (a.t - ti) / 0.45);
+        w = 1 - smooth(Math.min(1, r * 1.4)); off = f.D * (1 - smooth(r)); h = f.H * (1 - r) * (1 - r);
+        if (r >= 1) u.flight = null;
+      }
+    } else if (f) u.flight = null;
+    if (!isFinite(off) || !isFinite(h)) { off = 0; h = 0; w = 0; u.flight = null; }
+    player.position.set(Math.cos(f ? f.theta : 0) * off, h, Math.sin(f ? f.theta : 0) * off);
+    if (w > 0) {
+      u.lean.quaternion.copy(QI).slerp(f.R, w);
+      u.lean.position.copy(f.pivot).sub(f.pivot.clone().applyQuaternion(u.lean.quaternion));
+    } else { u.lean.quaternion.copy(QI); u.lean.position.set(0, 0, 0); }
   }
   // 卡通式拉伸：起手時微微壓縮，命中瞬間沿出招方向拉長
   {
@@ -1330,7 +1463,10 @@ function syncFx(run, t) {
 
 // ---------- 每格渲染 ----------
 let lastRenderT = null;
+const camFollow = new THREE.Vector3();
 R3D.render = (run, demo, t, shake) => {
+  renderer.info.autoReset = false;
+  renderer.info.reset(); // 統計整格（含後處理）的繪製次數
   beginPools();
   let dt = lastRenderT === null ? 0 : Math.min(0.05, t - lastRenderT);
   lastRenderT = t;
@@ -1348,6 +1484,9 @@ R3D.render = (run, demo, t, shake) => {
     sz = Math.sin(d) * osc + (Math.random() * 2 - 1) * shake * 0.3;
   }
   const dist = camDist * (1 - (run ? run.zoom || 0 : 0)) * (R3D.debugZoom || 1); // debugZoom 僅測試用
+  // 飛踢時鏡頭跟過去一部分
+  camFollow.lerp(tmpV.set(player.position.x * 0.45, 0, player.position.z * 0.45), Math.min(1, rdt * 8));
+  sx += camFollow.x; sz += camFollow.z;
   camera.position.set(camTarget.x + sx, camTarget.y + Math.cos(TILT) * dist, camTarget.z + Math.sin(TILT) * dist + sz);
   camera.lookAt(camTarget.x + sx, camTarget.y, camTarget.z + sz);
 
@@ -1364,6 +1503,10 @@ R3D.render = (run, demo, t, shake) => {
     }
     for (const [e, g] of enemyMap) if (!alive.has(e)) releaseEnemy(e, g);
     updateBodies(run.bodies, dt);
+    crowdBegin();
+    for (const g of enemyMap.values()) crowdAdd(g);
+    for (const g of bodyMap.values()) crowdAdd(g);
+    crowdEnd();
     const sk = run.skills;
     syncQi(rdt, sk.firePunch ? '#ff8a3c' : sk.thunderPunch ? '#ffe14a' : sk.icePunch ? '#9be7ff' : '#ffe9b0');
     syncFx(run, t);
@@ -1371,6 +1514,7 @@ R3D.render = (run, demo, t, shake) => {
   } else {
     for (const [e, g] of enemyMap) releaseEnemy(e, g);
     updateBodies([], dt);
+    crowdBegin(); crowdEnd();
     syncQi(rdt, '#ffe9b0');
     points.geometry.setDrawRange(0, 0);
     orbXp.count = orbGold.count = 0;
