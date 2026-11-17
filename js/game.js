@@ -13,7 +13,8 @@ const pauseBtn = document.getElementById('pauseBtn');
 
 // ---------- 畫面縮放 ----------
 function resize() {
-  const scale = Math.min(window.innerWidth / W, window.innerHeight / H);
+  const box = document.body;
+  const scale = Math.min((box.clientWidth || window.innerWidth) / W, (box.clientHeight || window.innerHeight) / H);
   const dpr = window.devicePixelRatio || 1;
   stage.style.width = W * scale + 'px';
   stage.style.height = H * scale + 'px';
