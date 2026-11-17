@@ -157,11 +157,11 @@ def make_clip(tk, a, b, yaw, impact=None, keep_move=0.3, ref=None, inplace=False
     """裁切 [a, b)，旋轉讓方向朝 +X，降頻，回傳 dict"""
     step = max(1, round(tk.fps / OUT_FPS))
     sel = np.arange(a, b, step)
-    qy = qaxis('Y', np.full(len(sel), -yaw))  # 繞 Y 轉 -yaw：把方向轉到 +X
+    qy = qaxis('Y', np.full(len(sel), yaw))  # 繞 Y 轉 yaw：方向 (cos yaw, sin yaw) 轉到 +X
     q = tk.q[sel].copy()
     q[:, 0] = qmul(qy, q[:, 0])
     root = qrot(qy, tk.root[sel])
-    refp = qrot(qaxis('Y', np.array(-yaw)), tk.root[ref if ref is not None else a])
+    refp = qrot(qaxis('Y', np.array(yaw)), tk.root[ref if ref is not None else a])
     rel = root - refp
     if inplace:
         # 移除整體前進：減掉首尾之間的線性位移
@@ -238,6 +238,9 @@ def main():
             else:
                 d = tk.P(side + 'Foot')[p] - tk.P('Hips')[p]
             yaw = yaw_to_x(d)
+            chk = qrot(qaxis('Y', np.array(yaw)), d)
+            err = math.degrees(math.atan2(chk[2], chk[0]))
+            assert abs(err) < 1, f'方向校正失敗：{err:.1f} 度'
             res.append(make_clip(tk, a, b, yaw, impact=p, keep_move=keep, ref=p))
             if len(res) >= n: break
         for k, c in enumerate(res):
@@ -283,6 +286,8 @@ def main():
         s, e = loop
         mv = tk.root[e] - tk.root[s]
         yaw = yaw_to_x(mv)
+        chk = qrot(qaxis('Y', np.array(yaw)), mv)
+        assert abs(math.degrees(math.atan2(chk[2], chk[0]))) < 1
         clips[name] = make_clip(tk, s, e, yaw, inplace=True)
         print(name, s / tk.fps, e / tk.fps, '首尾差', round(d, 3))
 

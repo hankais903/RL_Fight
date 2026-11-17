@@ -688,6 +688,23 @@ function chooseMove(side, kickChance) {
 }
 
 const tmpW = new THREE.Vector3();
+// 每一招在命中瞬間，出招肢體相對身體的角度（用隱藏的骨架預先算一次）
+let probe = null;
+const limbAngle = {};
+function strikeOffset(name, limb) {
+  const key = name + ':' + limb;
+  if (limbAngle[key] !== undefined) return limbAngle[key];
+  if (!probe) { probe = createRig(GRAY_LOOK); probe.visible = false; }
+  const c = CL[name];
+  sample(name, c.impact / c.fps, false, QA, RA);
+  for (let j = 0; j < NJ; j++) probe.userData.bones[j].quaternion.set(QA[j * 4 + 1], QA[j * 4 + 2], QA[j * 4 + 3], QA[j * 4]).normalize();
+  probe.userData.bones[0].position.set(RA[0] * UNIT, RA[1] * UNIT, RA[2] * UNIT);
+  probe.position.set(0, 0, 0); probe.rotation.set(0, 0, 0); probe.scale.setScalar(1);
+  probe.updateMatrixWorld(true);
+  probe.userData.bones[limb].getWorldPosition(tmpW);
+  limbAngle[key] = Math.atan2(tmpW.z, tmpW.x);
+  return limbAngle[key];
+}
 function updatePlayer(p, t, hurt, elements, dt, run) {
   const S = PLAYER_R * RIG_SCALE;
   const u = player.userData;
@@ -719,8 +736,15 @@ function updatePlayer(p, t, hurt, elements, dt, run) {
     a.recover = speed;
     u.strikeLimb = limb;
     u.impactClipT = ti;
-    u.faceYaw = Math.atan2(pu.ty, pu.tx);
+    u.faceYaw = Math.atan2(pu.ty, pu.tx) - strikeOffset(name, limb);
+    u.yaw = u.faceYaw; // 出招瞬間直接轉到位
     u.pending = pu;
+    u.pendingName = name;
+  }
+  // 命中前持續追蹤目標（敵人還在移動）
+  if (u.pending && !u.pending.impact) {
+    u.faceYaw = Math.atan2(u.pending.ty, u.pending.tx) - strikeOffset(u.pendingName, u.strikeLimb);
+    u.yaw = u.faceYaw;
   }
   // 打中之後放慢收招；招式結束回到待機
   if (!a.loop && a.t > (u.impactClipT || 0)) a.speed = Math.max(1.1, (a.recover || 1) * 0.55);
@@ -731,6 +755,15 @@ function updatePlayer(p, t, hurt, elements, dt, run) {
   u.yaw = (u.yaw ?? u.faceYaw) + dy * Math.min(1, dt * 25);
   player.rotation.y = -u.yaw;
   stepAnim(player, dt);
+  // 出招軌跡：從起手到命中後一小段
+  {
+    const striking = !a.loop && a.t < (u.impactClipT || 0) + 0.12;
+    player.updateMatrixWorld(true);
+    u.bones[u.strikeLimb].getWorldPosition(tmpW);
+    const sk2 = elements || {};
+    const tc = sk2.firePunch ? '#ff8a3c' : sk2.thunderPunch ? '#ffe14a' : sk2.icePunch ? '#9be7ff' : '#fff1c8';
+    updateTrail(dt > 0 ? dt : 0, striking && dt > 0, tmpW, tc, S * 0.22);
+  }
   // 拳勁：打中瞬間，從出招的手或腳射出一道氣勁到目標
   for (const pu of p.punches) {
     if (pu.impact && !pu.qi) {
@@ -738,12 +771,62 @@ function updatePlayer(p, t, hurt, elements, dt, run) {
       player.updateMatrixWorld(true);
       u.bones[u.strikeLimb].getWorldPosition(tmpW);
       const tx = pu.tx, tz = pu.ty, ty = pu.target && pu.target.r ? pu.target.r * RIG_SCALE * 1.4 : 30;
+      // 測試用：記錄出招肢體方向與目標方向的角度差
+      if (R3D.debugAngles) {
+        let d = Math.atan2(tmpW.z - player.position.z, tmpW.x - player.position.x) - Math.atan2(tz, tx);
+        R3D.debugAngles.push(Math.abs(Math.atan2(Math.sin(d), Math.cos(d))) * 180 / Math.PI);
+        (R3D.debugInfo = R3D.debugInfo || []).push([u.pendingName, Math.round(Math.abs(Math.atan2(Math.sin(d), Math.cos(d))) * 180 / Math.PI), u.anim.cur, +(u.anim.t - u.impactClipT).toFixed(3)]);
+      }
       qiFx.push({ x1: tmpW.x, y1: tmpW.y, z1: tmpW.z, x2: tx, y2: ty, z2: tz, life: 0.12, max: 0.12 });
     }
   }
   u.shield.visible = !!p.shield;
   u.shield.position.set(0, S * 1.2, 0);
   u.shield.scale.setScalar(S * 1.5);
+}
+
+// 出招軌跡：記錄拳頭或腳的路徑，畫成會淡出的光帶
+const TRAIL_MAX = 48, TRAIL_LIFE = 0.16;
+const trailPts = [];
+let trailMesh = null;
+function buildTrail() {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TRAIL_MAX * 2 * 3), 3).setUsage(THREE.DynamicDrawUsage));
+  g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(TRAIL_MAX * 2 * 3), 3).setUsage(THREE.DynamicDrawUsage));
+  const idx = [];
+  for (let i = 0; i < TRAIL_MAX - 1; i++) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  g.setIndex(idx);
+  trailMesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }));
+  trailMesh.frustumCulled = false;
+  scene.add(trailMesh);
+}
+const tcol = new THREE.Color();
+function updateTrail(rdt, active, pos, color, width) {
+  if (!trailMesh) buildTrail();
+  for (const p of trailPts) p.age += rdt;
+  while (trailPts.length && trailPts[0].age > TRAIL_LIFE) trailPts.shift();
+  if (active) { trailPts.push({ x: pos.x, y: pos.y, z: pos.z, age: 0 }); if (trailPts.length > TRAIL_MAX) trailPts.shift(); }
+  const g = trailMesh.geometry, P = g.attributes.position.array, C = g.attributes.color.array;
+  const n = trailPts.length;
+  tcol.set(color);
+  for (let i = 0; i < n; i++) {
+    const p = trailPts[i];
+    const q = trailPts[Math.min(i + 1, n - 1)], o = trailPts[Math.max(i - 1, 0)];
+    const dx = q.x - o.x, dy = q.y - o.y, dz = q.z - o.z;
+    // 帶子寬度方向：垂直於路徑與鏡頭方向
+    const cx = camera.position.x - p.x, cy = camera.position.y - p.y, cz = camera.position.z - p.z;
+    let sx = dy * cz - dz * cy, sy = dz * cx - dx * cz, sz = dx * cy - dy * cx;
+    const sl = Math.hypot(sx, sy, sz) || 1;
+    const life = Math.max(0, 1 - p.age / TRAIL_LIFE);
+    const w = width * life * (0.3 + 0.7 * (i / Math.max(1, n - 1)));
+    sx = sx / sl * w; sy = sy / sl * w; sz = sz / sl * w;
+    P.set([p.x + sx, p.y + sy, p.z + sz, p.x - sx, p.y - sy, p.z - sz], i * 6);
+    const b = life * life;
+    C.set([tcol.r * b, tcol.g * b, tcol.b * b, tcol.r * b, tcol.g * b, tcol.b * b], i * 6);
+  }
+  g.setDrawRange(0, Math.max(0, n - 1) * 6);
+  g.attributes.position.needsUpdate = true;
+  g.attributes.color.needsUpdate = true;
 }
 
 // 拳勁特效
@@ -870,6 +953,22 @@ const mkShock = () => {
   scene.add(m);
   return m;
 };
+let flashTex = null;
+const softTex = () => {
+  if (flashTex) return flashTex;
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d');
+  const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.4, 'rgba(255,255,255,0.6)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+  flashTex = new THREE.CanvasTexture(c);
+  return flashTex;
+};
+const mkFlash = () => { const m = new THREE.Sprite(new THREE.SpriteMaterial({ map: softTex(), transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending })); scene.add(m); return m; };
+const mkSmoke = () => { const m = new THREE.Sprite(new THREE.SpriteMaterial({ map: softTex(), color: '#9a8f86', transparent: true, depthWrite: false })); scene.add(m); return m; };
+const mkSline = () => { const m = new THREE.Mesh(GEO.box, new THREE.MeshBasicMaterial({ color: '#fff', transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })); scene.add(m); return m; };
+const mkDring = () => { const m = new THREE.Mesh(new THREE.RingGeometry(0.8, 1, 40), new THREE.MeshBasicMaterial({ color: '#fff', transparent: true, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending })); scene.add(m); return m; };
 const mkSpike = () => {
   const m = new THREE.Mesh(GEO.cone, lambert('#bfefff', { emissive: 0x2a6f8f, transparent: true }));
   m.castShadow = true;
@@ -936,15 +1035,60 @@ function syncFx(run, t) {
       const m = take('impact', mkImpact);
       const k = 1 - a;
       m.position.set(f.x, f.h || 20, f.y);
-      m.scale.setScalar((44 + k * 40) * f.size);
+      if (f.dir !== undefined) {
+        // 星芒沿出拳方向拉長（換算成螢幕上的角度）
+        const p1 = R3D.project(f.x, f.y, f.h), p2 = R3D.project(f.x + Math.cos(f.dir) * 20, f.y + Math.sin(f.dir) * 20, f.h);
+        m.material.rotation = -Math.atan2(p2.y - p1.y, p2.x - p1.x) + (f.rot || 0) * 0.15;
+        const sz = (40 + Math.pow(k, 0.5) * 50) * f.size;
+        m.scale.set(sz * 1.5, sz * 0.75, 1);
+      } else {
+        m.scale.setScalar((44 + k * 40) * f.size);
+        m.material.rotation = f.x * 0.1;
+      }
       m.material.color.set(f.color);
       m.material.opacity = a;
-      m.material.rotation = f.x * 0.1;
-      const sh = take('shock', mkShock);
-      sh.position.copy(m.position);
-      sh.scale.setScalar((20 + k * 90) * f.size);
-      sh.material.color.set(f.color);
-      sh.material.opacity = a * 0.9;
+      if (f.dir === undefined) {
+        const sh = take('shock', mkShock);
+        sh.position.copy(m.position);
+        sh.scale.setScalar((20 + k * 90) * f.size);
+        sh.material.color.set(f.color);
+        sh.material.opacity = a * 0.9;
+      }
+    } else if (f.kind === 'flash') {
+      const m = take('flash', mkFlash);
+      m.position.set(f.x, f.h, f.y);
+      m.scale.setScalar(70 * f.size * (1 + (1 - a) * 0.6));
+      m.material.opacity = a;
+    } else if (f.kind === 'lines') {
+      // 速度線：從命中點往後噴出
+      const k = 1 - a;
+      for (let i = 0; i < f.n; i++) {
+        const m = take('sline', mkSline);
+        const r1 = Math.sin(f.seed + i * 12.9898) * 43758.5453; const rr = r1 - Math.floor(r1);
+        const ang = f.dir + (rr - 0.5) * 1.6;
+        const d0 = 10 + k * (50 + rr * 40), len = (1 - k) * (30 + rr * 30) + 6;
+        const cx = f.x + Math.cos(ang) * (d0 + len / 2), cz = f.y + Math.sin(ang) * (d0 + len / 2);
+        m.position.set(cx, f.h + (rr - 0.5) * 18, cz);
+        m.rotation.set(0, -ang, 0);
+        m.scale.set(len, 2.5, 2.5);
+        m.material.color.set(i % 3 === 0 ? '#ffffff' : f.color);
+        m.material.opacity = a;
+      }
+    } else if (f.kind === 'dring') {
+      // 垂直於出拳方向的貫穿震波
+      const m = take('dring', mkDring);
+      const dist = 8 + (1 - a) * 30;
+      m.position.set(f.x + Math.cos(f.dir) * dist, f.h, f.y + Math.sin(f.dir) * dist);
+      tmpV.set(m.position.x + Math.cos(f.dir), f.h, m.position.z + Math.sin(f.dir));
+      m.lookAt(tmpV);
+      m.scale.setScalar(f.r);
+      m.material.color.set(f.color);
+      m.material.opacity = a * 0.9;
+    } else if (f.kind === 'smoke') {
+      const m = take('smoke', mkSmoke);
+      m.position.set(f.x, f.h, f.y);
+      m.scale.setScalar(f.size * (1 + (1 - a) * 1.5));
+      m.material.opacity = a * 0.45;
     } else if (f.kind === 'spikes') {
       // 冰霜爆發：地上冒出一圈冰刺
       const k = 1 - a;

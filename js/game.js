@@ -357,9 +357,23 @@ function damageEnemy(e, amount, o = {}) {
   e.squash = 0.12;
   if (o.punch) {
     const hx = e.x - Math.cos(o.dir) * e.r, hy = e.y - Math.sin(o.dir) * e.r;
-    spark(hx, hy, o.crit ? '#ffe14a' : '#ffffff', o.crit ? 16 : 8);
-    run.fx.push({ kind: 'impact', x: hx, y: hy, h: e.r * 1.2, size: o.crit ? 1.7 : 1, color: o.crit ? '#ffe14a' : '#ffffff', life: 0.13, max: 0.13 });
-    run.fx.push({ kind: 'ring', x: hx, y: hy, r: 4, maxR: o.crit ? 46 : 28, life: 0.18, max: 0.18, color: o.crit ? '#ffd84a' : '#ffffff', w: 4 });
+    const h = e.r * 2.2;
+    const col = o.crit ? '#ffd23a' : ELEMENT_HIT();
+    // 往出拳方向噴的火花
+    for (let i = 0; i < (o.crit ? 22 : 12); i++) {
+      const a = o.dir + rand(-0.55, 0.55), sp = rand(200, 560);
+      run.fx.push({ kind: 'dot', x: hx, y: hy, z: h, vz: rand(-40, 260), vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, size: rand(3, 7), color: Math.random() < 0.6 ? col : '#ffffff', life: rand(0.18, 0.4), max: 0.4 });
+    }
+    // 分層：白閃 → 星芒 → 速度線、貫穿震波 → 煙
+    run.fx.push({ kind: 'flash', x: hx, y: hy, h, size: o.crit ? 1.8 : 1.1, life: 0.06, max: 0.06 });
+    run.fx.push({ kind: 'impact', x: hx, y: hy, h, dir: o.dir, rot: rand(0, Math.PI * 2), size: o.crit ? 1.7 : 1, color: col, life: 0.16, max: 0.16 });
+    run.fx.push({ kind: 'lines', x: hx, y: hy, h, dir: o.dir, n: o.crit ? 10 : 6, seed: Math.random() * 100, color: col, life: 0.18, max: 0.18 });
+    run.fx.push({ kind: 'dring', x: e.x, y: e.y, h, dir: o.dir, r: 4, maxR: o.crit ? 60 : 36, color: col, life: 0.22, max: 0.22 });
+    for (let i = 0; i < 4; i++) {
+      const a = o.dir + rand(-1, 1);
+      run.fx.push({ kind: 'smoke', x: e.x, y: e.y, h: rand(5, h), vx: Math.cos(a) * rand(30, 90), vy: Math.sin(a) * rand(30, 90), size: rand(12, 22), life: rand(0.35, 0.55), max: 0.55 });
+    }
+    if (o.crit && Math.random() < 0.45) addComic(e.x, e.y, o.dir);
     e.stun = Math.max(e.stun || 0, o.crit ? 0.35 : 0.2);
     run.hitstop = Math.max(run.hitstop, o.crit ? 0.08 : 0.04);
     run.shake = Math.max(run.shake, o.crit ? 13 : 6);
@@ -391,6 +405,7 @@ function killEnemy(e, o = {}) {
   const dir = o.dir !== undefined ? o.dir : Math.atan2(e.y, e.x);
   const sp = rand(520, 780) / Math.sqrt(e.T.mass) * (e.T.boss ? 0.4 : 1);
   if (o.punch) {
+    if (Math.random() < 0.18) addComic(e.x, e.y, dir);
     run.hitstop = Math.max(run.hitstop, 0.06);
     run.shake = Math.max(run.shake, 9);
     if (o.crit) { run.slowmo = 0.18; run.zoom = Math.max(run.zoom, 0.05); }
@@ -899,6 +914,17 @@ function lightningFx(x1, y1, x2, y2) {
   pts.push([x2, y2]);
   run.fx.push({ kind: 'bolt', pts, life: 0.18, max: 0.18 });
 }
+// 元素拳的命中顏色
+function ELEMENT_HIT() {
+  const sk = run.skills;
+  return sk.firePunch ? '#ff9a3c' : sk.thunderPunch ? '#ffe14a' : sk.icePunch ? '#9be7ff' : '#ffffff';
+}
+// 狀聲字
+const COMICS = [['砰！', '#ffd23a'], ['啪！', '#ffffff'], ['喝！', '#ff7a3c'], ['碰！', '#ffd23a'], ['哈！', '#ff9a3c']];
+function addComic(x, y, dir) {
+  const [t, c] = COMICS[Math.floor(Math.random() * COMICS.length)];
+  run.texts.push({ x: x + Math.cos(dir) * 20, y: y + Math.sin(dir) * 20, h: 70, text: t, color: c, size: 40, life: 0.6, max: 0.6, comic: true, rot: rand(-0.35, 0.35) });
+}
 function addText(x, y, text, color, size) { run.texts.push({ x, y, text, color, size, life: 0.7, max: 0.7 }); }
 
 function updateFx(dt) {
@@ -908,7 +934,8 @@ function updateFx(dt) {
       f.x += f.vx * dt; f.y += f.vy * dt; f.vx *= 0.92; f.vy *= 0.92;
       if (f.vz !== undefined) { f.z += f.vz * dt; f.vz -= (f.rise ? -60 : 700) * dt; if (f.z < 2) { f.z = 2; f.vz = 0; } }
     }
-    else if (f.kind === 'ring') f.r += (f.maxR - f.r) * Math.min(1, dt * 14);
+    else if (f.kind === 'ring' || f.kind === 'dring') f.r += (f.maxR - f.r) * Math.min(1, dt * 14);
+    else if (f.kind === 'smoke') { f.x += f.vx * dt; f.y += f.vy * dt; f.h += 25 * dt; f.vx *= 0.94; f.vy *= 0.94; }
   }
   run.fx = run.fx.filter(f => f.life > 0);
   if (run.fx.length > 400) run.fx.splice(0, run.fx.length - 400);
@@ -1407,6 +1434,15 @@ function drawWorldOverlay() {
     const pop = k < 1 ? 1.7 - 0.7 * k : 1;
     const s = R3D.project(t.x, t.y, (t.h || 40) + (1 - t.life / t.max) * 30);
     ctx.globalAlpha = Math.min(1, t.life / t.max * 2);
+    if (t.comic) {
+      ctx.save(); ctx.translate(s.x, s.y); ctx.rotate(t.rot);
+      ctx.font = `900 ${t.size * pop}px system-ui, sans-serif`;
+      ctx.lineWidth = 7; ctx.strokeStyle = '#1a0a0a';
+      ctx.strokeText(t.text, 0, 0);
+      ctx.fillStyle = t.color; ctx.fillText(t.text, 0, 0);
+      ctx.restore();
+      continue;
+    }
     ctx.font = `900 ${t.size * pop}px system-ui, sans-serif`;
     ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,0.7)';
     ctx.strokeText(t.text, s.x, s.y);
