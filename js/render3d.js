@@ -745,6 +745,26 @@ function buildPlayer() {
 // 挑招式：出拳（直拳／勾拳／上勾拳）或踢腿（飛踢／迴旋踢／側踢／前踢）；回傳 [片段名, 出招的肢體]
 function wpick(list) { let t = 0; for (const [, w] of list) t += w; let r = Math.random() * t; for (const [v, w] of list) { r -= w; if (r <= 0) return v; } return list[0][0]; }
 function clipFor(kind, s) { return CLIPS_BY[kind + s] || CLIPS_BY[kind + (s === 'R' ? 'L' : 'R')]; }
+// 連續出拳時依套路一招接一招，最後以飛踢收尾；一套打完換下一套
+const COMBOS = [
+  ['straightL', 'straightR', 'hookL', 'upperR', 'roundR', 'flyL'],
+  ['hookR', 'hookL', 'upperR', 'straightL', 'sideR', 'flyR'],
+  ['straightR', 'upperL', 'hookR', 'frontL', 'roundL', 'flyR'],
+  ['straightL', 'hookR', 'upperL', 'straightR', 'sideL', 'flyL'],
+  ['upperR', 'hookL', 'straightR', 'hookL', 'roundR', 'flyR'],
+];
+function comboMove(u, now) {
+  if (!u.combo || now - u.combo.last > 1.4) u.combo = { route: pick(COMBOS), step: 0, last: now };
+  const c = u.combo;
+  if (c.step >= c.route.length) { c.route = pick(COMBOS.filter(r => r !== c.route)); c.step = 0; }
+  const key = c.route[c.step++];
+  c.last = now;
+  const kind = key.slice(0, -1), s = key.slice(-1);
+  const name = pick(clipFor(kind, s));
+  const foot = ['fly', 'round', 'side', 'front'].includes(kind);
+  const left = /L\d+$/.test(name);
+  return [name, foot ? (left ? JI.LeftFoot : JI.RightFoot) : (left ? JI.LeftHand : JI.RightHand), c.step === c.route.length];
+}
 function chooseMove(side, kickChance) {
   const s = side > 0 ? 'R' : 'L';
   if (Math.random() < kickChance) {
@@ -796,13 +816,14 @@ function updatePlayer(p, t, hurt, elements, dt, run) {
     u.seen.add(pu);
     u.count++;
     const crit = run && run.comboPop > 0.1 && Math.random() < 0.15;
-    const [name, limb] = chooseMove(pu.side, 0.32);
+    const [name, limb, finisher] = comboMove(u, t);
+    u.finisher = finisher;
     const c = CL[name];
     const ti = c.impact / c.fps;
     const hitAt = pu.dur * (pu.hitFrac || 0.5);
     const t0 = ti * 0.45;
     const speed = Math.max(1, (ti - t0) / Math.max(0.05, hitAt));
-    play(a, name, { loop: false, t: t0, speed, fade: 0.06, restart: true });
+    play(a, name, { loop: false, t: t0, speed, fade: a.loop ? 0.06 : 0.1, restart: true });
     a.recover = speed;
     u.strikeLimb = limb;
     u.impactClipT = ti;
@@ -851,6 +872,14 @@ function updatePlayer(p, t, hurt, elements, dt, run) {
       }
       qiFx.push({ x1: tmpW.x, y1: tmpW.y, z1: tmpW.z, x2: tx, y2: ty, z2: tz, life: 0.12, max: 0.12 });
     }
+  }
+  // 卡通式拉伸：起手時微微壓縮，命中瞬間沿出招方向拉長
+  {
+    const k = !a.loop ? (a.t - (u.impactClipT || 0)) : 9;
+    let sx = 1, sy = 1;
+    if (k > -0.12 && k < 0) { const q = 1 + k / 0.12; sx = 1 - 0.06 * q; sy = 1 + 0.05 * q; }
+    else if (k >= 0 && k < 0.14) { const q = 1 - k / 0.14; sx = 1 + (u.finisher ? 0.28 : 0.18) * q; sy = 1 - 0.1 * q; }
+    u.lean.scale.set(sx, sy, 1 / Math.sqrt(sx * sy));
   }
   u.shield.visible = !!p.shield;
   u.shield.position.set(0, S * 1.2, 0);

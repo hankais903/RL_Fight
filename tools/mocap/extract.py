@@ -153,7 +153,29 @@ def yaw_to_x(d):
     return math.atan2(d[2], d[0])
 
 
-def make_clip(tk, a, b, yaw, impact=None, keep_move=0.3, ref=None, inplace=False, ground_all=False):
+HINGE = {'LeftForeArm', 'RightForeArm', 'LeftLeg', 'RightLeg'}
+
+ARM_JOINTS = {'LeftShoulder', 'LeftArm', 'LeftHand', 'RightShoulder', 'RightArm', 'RightHand'}
+
+def exaggerate(q, joints, k, k_arm=None):
+    """動作誇張化：每個關節相對片段第一格的旋轉角度乘上 k（手肘、膝蓋不放大，避免反折）"""
+    base = q[0]
+    out = q.copy()
+    for j, jt in enumerate(joints):
+        if jt['name'] in HINGE or jt['name'] in KEEP_DROP: continue
+        rel = qmul(qinv(np.broadcast_to(base[j], q[:, j].shape)), q[:, j])
+        rel[rel[:, 0] < 0] *= -1
+        w = np.clip(rel[:, 0], -1, 1)
+        ang = 2 * np.arccos(w)
+        axis = rel[:, 1:] / (np.linalg.norm(rel[:, 1:], axis=1, keepdims=True) + 1e-9)
+        kk = k_arm if (k_arm is not None and jt['name'] in ARM_JOINTS) else k
+        na = np.minimum(ang * kk, np.pi * 0.92)
+        nr = np.concatenate([np.cos(na / 2)[:, None], axis * np.sin(na / 2)[:, None]], 1)
+        out[:, j] = qmul(np.broadcast_to(base[j], nr.shape), nr)
+    return out
+
+
+def make_clip(tk, a, b, yaw, impact=None, keep_move=0.3, ref=None, inplace=False, ground_all=False, exag=1.0, exag_arm=None):
     """裁切 [a, b)，旋轉讓方向朝 +X，降頻，回傳 dict"""
     step = max(1, round(tk.fps / OUT_FPS))
     sel = np.arange(a, b, step)
@@ -183,6 +205,8 @@ def make_clip(tk, a, b, yaw, impact=None, keep_move=0.3, ref=None, inplace=False
         rel[:, 1] -= ground - 0.6
     # 換算到共用骨架的大小
     rel *= SKEL_LEG / tk.leg
+    if exag != 1.0:
+        q = exaggerate(q, tk.joints, exag, exag_arm)
     keepj = [k for k, j in enumerate(tk.joints) if j['name'] not in KEEP_DROP]
     q = q[:, keepj]
     # 讓相鄰格的四元數同號，內插時不會繞遠路
@@ -387,7 +411,7 @@ def main():
             chk = qrot(qaxis('Y', np.array(yaw)), d)
             err = math.degrees(math.atan2(chk[2], chk[0]))
             assert abs(err) < 1, f'方向校正失敗：{err:.1f} 度'
-            res.append(make_clip(tk, a, b, yaw, impact=p, keep_move=keep, ref=p))
+            res.append(make_clip(tk, a, b, yaw, impact=p, keep_move=0.6, ref=a, exag=1.35))
             if len(res) >= n: break
         for k, c in enumerate(res):
             clips[f'{prefix or kind}{side[0]}{k}'] = c
@@ -412,7 +436,9 @@ def main():
             a, b = i - int(0.32 * tk.fps), i + int(0.28 * tk.fps)
             if a < 0 or b >= tk.q.shape[0]: continue
             d = tk.P(side + 'Hand')[i] - tk.P('Spine1')[i]
-            clips[f'{cls}{side[0]}{len(used)}'] = make_clip(tk, a, b, yaw_to_x(d), impact=i, keep_move=0.2, ref=i)
+            # 直拳：只放大扭腰與蹬腿，手臂維持原本的直線；勾拳、上勾拳整體放大
+            ex, exa, mv = (1.2, 1.0, 1.0) if cls == 'straight' else (1.5, 1.35, 0.7)
+            clips[f'{cls}{side[0]}{len(used)}'] = make_clip(tk, a, b, yaw_to_x(d), impact=i, keep_move=mv, ref=a, exag=ex, exag_arm=exa)
             used.append((k, i))
             if len(used) >= 3: break
         print(f'{cls} {side}: 候選 {len(lst)}，使用 {len(used)}')
@@ -442,7 +468,7 @@ def main():
         a, b = p - int(0.6 * tk.fps), p + int(0.55 * tk.fps)
         if a < 0 or b >= tk.q.shape[0]: continue
         d = tk.P(side + 'Foot')[p] - tk.P('Hips')[p]
-        clips[f'fly{s0}{nfly[s0]}'] = make_clip(tk, a, b, yaw_to_x(d), impact=p, keep_move=0.35, ref=p)
+        clips[f'fly{s0}{nfly[s0]}'] = make_clip(tk, a, b, yaw_to_x(d), impact=p, keep_move=0.9, ref=a, exag=1.3)
         nfly[s0] += 1
     print('飛踢', nfly)
 
