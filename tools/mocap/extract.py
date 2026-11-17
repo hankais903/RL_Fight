@@ -284,11 +284,25 @@ def make_stance(tk, f, n=22, drop=0.07, amp=0.09, arm_lower=0.7):
     for side in ('Left', 'Right'):
         t = q0.copy(); world_rotate(J, t, r0, ix[side + 'Arm'], qaxis1(lat, 0.2))
         signs[side] = 1 if hand_y(t, side) < hand_y(q0, side) else -1
-    sp_sign = 1
-    t = q0.copy(); world_rotate(J, t, r0, ix['Spine'], qaxis1(lat, 0.1))
-    w1, _ = fk(J, t[None], r0[None]); w0, _ = fk(J, q0[None], r0[None])
-    fwd = np.cross(lat, [0, 1, 0])
-    if np.dot(w1[0][ix['Head']] - w0[0][ix['Head']], fwd) < 0: sp_sign = -1
+    fwd = np.cross([0, 1, 0], lat)          # 胸口朝向（up × 右 = 前）
+    # 對手方向：後腳 → 前腳
+    lf0, rf0 = feet['Left'], feet['Right']
+    front0, back0 = (lf0, rf0) if np.dot(lf0 - rf0, fwd) > 0 else (rf0, lf0)
+    opp = front0 - back0; opp[1] = 0; opp /= np.linalg.norm(opp)
+    lean_axis = np.cross([0, 1, 0], opp)    # 繞這個軸轉，頭會往對手方向或反方向
+    def head_ahead(ang):
+        t = q0.copy(); world_rotate(J, t, r0, ix['Spine'], qaxis1(lean_axis, ang))
+        w, _ = fk(J, t[None], r0[None]); w = w[0]
+        return float(np.dot(w[ix['Head']] - w[ix['Hips']], opp)) / tk.leg
+    sp_sign = 1 if head_ahead(0.1) > head_ahead(0) else -1
+    # 找出前傾角度：頭部超過髖部約 0.2 個腿長
+    lo, hi = 0.0, 0.42   # 最多前傾約 24 度
+    for _ in range(20):
+        mid = (lo + hi) / 2
+        if head_ahead(sp_sign * mid) < 0.1: lo = mid
+        else: hi = mid
+    base_lean = lo
+    print('架式前傾', round(math.degrees(base_lean), 1), '度，原本頭部位置', round(head_ahead(0), 2))
     Q, Rt = [], []
     for i in range(n):
         ph = i / n * 2 * math.pi
@@ -297,7 +311,7 @@ def make_stance(tk, f, n=22, drop=0.07, amp=0.09, arm_lower=0.7):
         r = r0.copy(); r[1] -= tk.leg * (drop + amp * bob)
         # 上半身慢半拍：身體微微前傾、雙拳上下
         lagb = 0.5 - 0.5 * math.cos(ph - 0.9)
-        world_rotate(J, q, r, ix['Spine'], qaxis1(lat, sp_sign * (0.06 + 0.05 * lagb)))
+        world_rotate(J, q, r, ix['Spine'], qaxis1(lean_axis, sp_sign * (base_lean + 0.05 * lagb)))
         for side in ('Left', 'Right'):
             world_rotate(J, q, r, ix[side + 'Arm'], qaxis1(lat, signs[side] * (arm_lower + 0.07 * lagb)))
         for side in ('Left', 'Right'):
@@ -308,10 +322,42 @@ def make_stance(tk, f, n=22, drop=0.07, amp=0.09, arm_lower=0.7):
     slip = max(np.linalg.norm(syn.wp[:, ix[s + 'Foot']] - feet[s], axis=1).max() for s in ('Left', 'Right'))
     assert slip < 0.05, f'腳滑動 {slip}'
     # 朝向：後腳 → 前腳 的方向轉成 +X（側身，前拳對著敵人）
-    lf, rf = feet['Left'], feet['Right']
-    front, back = (lf, rf) if np.dot(lf - rf, fwd) > 0 else (rf, lf)
-    d = front - back; d[1] = 0
+    d = opp.copy()
     return syn, yaw_to_x(d)
+
+
+def classify_punches(tk, side):
+    """依拳頭軌跡把出拳分成直拳、勾拳、上勾拳。回傳 [(類別, 命中格, 清楚程度)]"""
+    ix = tk.idx; fps = tk.fps
+    hand = tk.P(side + 'Hand'); chest = tk.P('Spine1')
+    rel = hand - chest
+    v = np.zeros(len(rel)); v[1:] = np.linalg.norm(np.diff(rel, axis=0), axis=1) * fps / tk.leg
+    lat = tk.P('RightArm') - tk.P('LeftArm'); lat[:, 1] = 0
+    lat /= np.linalg.norm(lat, axis=1, keepdims=True)
+    fwd = np.cross(np.array([0, 1, 0]), lat)
+    inward = -lat if side == 'Right' else lat          # 往身體中線的方向
+    ext = tk.ext(side)
+    out = []
+    pk = peaks(v, 2.2, 0.35, fps)
+    for p in pk:
+        a = p - int(0.12 * fps)
+        # 命中：速度降到峰值 35% 以下的那一格（最多 0.12 秒）
+        i = p
+        while i < min(len(v) - 1, p + int(0.12 * fps)) and v[i] > v[p] * 0.35: i += 1
+        if a < 0 or i >= len(v): continue
+        D = rel[i] - rel[a]
+        n = np.linalg.norm(D) / tk.leg
+        if n < 0.25: continue
+        dF, dI, dU = np.dot(D, fwd[p]), np.dot(D, inward[p]), D[1]
+        L = np.linalg.norm(D)
+        e = ext[i]
+        if dF > 0.75 * L and e > 0.93 and abs(dU) < 0.35 * L:
+            out.append(('straight', i, dF / L * v[p]))
+        elif dU > 0.6 * L and dF > -0.1 * L:
+            out.append(('upper', i, dU / L * v[p]))
+        elif dI > 0.45 * L and abs(dU) < 0.5 * L and 0.4 < e < 0.95 and dF > -0.2 * L:
+            out.append(('hook', i, dI / L * v[p]))
+    return out
 
 
 def main():
@@ -348,10 +394,28 @@ def main():
         print(f'{prefix or kind} {side}: 找到 {len(pk)} 個，使用 {len(res)}')
 
     # 出拳：空手道上段突（Oizuki）與拳擊
-    strike(base, 'Right', 'punch', 2, 0.9, 0.35, 0.3, prefix='oi')
-    strike(base, 'Left', 'punch', 2, 0.9, 0.35, 0.3, prefix='oi')
-    strike(T['14_01'], 'Right', 'punch', 3, 0.9, 0.25, 0.25, gap=0.5, prefix='box', keep=0.2)
-    strike(T['14_01'], 'Left', 'punch', 3, 0.9, 0.25, 0.25, gap=0.5, prefix='box', keep=0.2)
+    # 出拳：從空手道與多段拳擊動作分類出 直拳 / 勾拳 / 上勾拳
+    for k in ['13_17', '13_18', '14_02', '14_03', '15_13', '17_10']:
+        if k not in T: T[k] = Take(src / f'{k}.bvh')
+    pool = {}
+    for k in ['135_09', '14_01', '13_17', '13_18', '14_02', '14_03', '15_13', '17_10']:
+        tk = T[k]
+        for side in ('Right', 'Left'):
+            for cls, i, score in classify_punches(tk, side):
+                pool.setdefault((cls, side), []).append((score, k, i))
+    for (cls, side), lst in sorted(pool.items()):
+        lst.sort(reverse=True)
+        used = []
+        for score, k, i in lst:
+            if any(k == k2 and abs(i - i2) < T[k].fps for k2, i2 in used): continue
+            tk = T[k]
+            a, b = i - int(0.32 * tk.fps), i + int(0.28 * tk.fps)
+            if a < 0 or b >= tk.q.shape[0]: continue
+            d = tk.P(side + 'Hand')[i] - tk.P('Spine1')[i]
+            clips[f'{cls}{side[0]}{len(used)}'] = make_clip(tk, a, b, yaw_to_x(d), impact=i, keep_move=0.2, ref=i)
+            used.append((k, i))
+            if len(used) >= 3: break
+        print(f'{cls} {side}: 候選 {len(lst)}，使用 {len(used)}')
     # 踢腿：前踢、迴旋踢、側踢、飛踢
     strike(T['135_04'], 'Right', 'kick', 2, -0.35, 0.45, 0.4, prefix='front')
     strike(T['135_04'], 'Left', 'kick', 1, -0.35, 0.45, 0.4, prefix='front')
@@ -359,8 +423,28 @@ def main():
     strike(T['135_07'], 'Left', 'kick', 1, -0.3, 0.5, 0.45, prefix='round')
     strike(T['135_11'], 'Right', 'kick', 2, -0.3, 0.5, 0.45, prefix='side')
     strike(T['135_11'], 'Left', 'kick', 1, -0.3, 0.5, 0.45, prefix='side')
-    strike(T['90_05'], 'Right', 'kick', 1, -0.6, 0.7, 0.6, prefix='jump', keep=0.15)
-    if 'jumpR0' not in clips: strike(T['90_05'], 'Left', 'kick', 1, -0.6, 0.7, 0.6, prefix='jump', keep=0.15)
+    # 飛踢：多種跳躍踢、跳躍旋踢
+    fly = []
+    for k in ['90_05', '90_06', '90_07', '75_16', '88_06', '87_01']:
+        if k not in T: T[k] = Take(src / f'{k}.bvh')
+        tk = T[k]
+        for side in ('Right', 'Left'):
+            sig = tk.foot_h(side)
+            airborne = (tk.P('LeftToeBase')[:, 1] > tk.leg * 0.25) & (tk.P('RightToeBase')[:, 1] > tk.leg * 0.25)
+            for p in peaks(np.where(airborne, sig, -9), -0.35, 0.8, tk.fps):
+                fly.append((float(sig[p]), k, side, p))
+    fly.sort(reverse=True)
+    nfly = {'R': 0, 'L': 0}
+    for h, k, side, p in fly:
+        tk = T[k]
+        s0 = side[0]
+        if nfly[s0] >= 3: continue
+        a, b = p - int(0.6 * tk.fps), p + int(0.55 * tk.fps)
+        if a < 0 or b >= tk.q.shape[0]: continue
+        d = tk.P(side + 'Foot')[p] - tk.P('Hips')[p]
+        clips[f'fly{s0}{nfly[s0]}'] = make_clip(tk, a, b, yaw_to_x(d), impact=p, keep_move=0.35, ref=p)
+        nfly[s0] += 1
+    print('飛踢', nfly)
 
     # 待機：拳擊架式，雙手護在臉前、沒有出拳
     bx = T['14_01']

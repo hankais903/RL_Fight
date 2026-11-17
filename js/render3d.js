@@ -625,7 +625,7 @@ function updateEnemy(e, g, t, dt) {
   if (u.reacting && (animDone(g) || a.t > clipLen(a.cur) * 0.8)) u.reacting = false;
   if (e.lunge > 0 && !u.attacking && !u.reacting) {
     u.attacking = true;
-    play(a, pick(CLIPS_BY.boxR.concat(CLIPS_BY.boxL)), { loop: false, speed: 1.6, fade: 0.06, t: 0.05 });
+    play(a, pick((CLIPS_BY.straightR || []).concat(CLIPS_BY.straightL || [], CLIPS_BY.hookR || [], CLIPS_BY.hookL || [])), { loop: false, speed: 1.6, fade: 0.06, t: 0.05 });
   }
   if (u.attacking && animDone(g)) u.attacking = false;
   if (!u.attacking && !u.reacting && !frozen) {
@@ -742,18 +742,18 @@ function buildPlayer() {
   u.count = 0;
 }
 
-// 依出招方向挑招式；回傳 [片段名, 出招的肢體]
+// 挑招式：出拳（直拳／勾拳／上勾拳）或踢腿（飛踢／迴旋踢／側踢／前踢）；回傳 [片段名, 出招的肢體]
+function wpick(list) { let t = 0; for (const [, w] of list) t += w; let r = Math.random() * t; for (const [v, w] of list) { r -= w; if (r <= 0) return v; } return list[0][0]; }
+function clipFor(kind, s) { return CLIPS_BY[kind + s] || CLIPS_BY[kind + (s === 'R' ? 'L' : 'R')]; }
 function chooseMove(side, kickChance) {
   const s = side > 0 ? 'R' : 'L';
-  const r = Math.random();
-  if (r < kickChance) {
-    const kind = pick(['front', 'round', 'side']);
-    const list = CLIPS_BY[kind + s] || CLIPS_BY[kind + 'R'];
-    const name = pick(list);
+  if (Math.random() < kickChance) {
+    const kind = wpick([['fly', 0.35], ['round', 0.25], ['side', 0.2], ['front', 0.2]]);
+    const name = pick(clipFor(kind, s));
     return [name, /L\d+$/.test(name) ? JI.LeftFoot : JI.RightFoot];
   }
-  const list = (Math.random() < 0.55 ? CLIPS_BY['box' + s] : CLIPS_BY['oi' + s]) || CLIPS_BY['box' + s];
-  const name = pick(list);
+  const kind = wpick([['straight', 0.4], ['hook', 0.3], ['upper', 0.3]]);
+  const name = pick(clipFor(kind, s));
   return [name, /L\d+$/.test(name) ? JI.LeftHand : JI.RightHand];
 }
 
@@ -796,7 +796,7 @@ function updatePlayer(p, t, hurt, elements, dt, run) {
     u.seen.add(pu);
     u.count++;
     const crit = run && run.comboPop > 0.1 && Math.random() < 0.15;
-    const [name, limb] = (u.count % 7 === 0 && CLIPS_BY.jumpR) ? [CLIPS_BY.jumpR[0], JI.RightFoot] : chooseMove(pu.side, 0.3);
+    const [name, limb] = chooseMove(pu.side, 0.32);
     const c = CL[name];
     const ti = c.impact / c.fps;
     const hitAt = pu.dur * (pu.hitFrac || 0.5);
@@ -838,6 +838,8 @@ function updatePlayer(p, t, hurt, elements, dt, run) {
   for (const pu of p.punches) {
     if (pu.impact && !pu.qi) {
       pu.qi = true;
+      // 命中瞬間把動作對齊到「打到最遠」的那一格（配合命中停頓，看起來像拳腳定格）
+      if (u.pending === pu && !a.loop && a.t < u.impactClipT) { a.t = u.impactClipT; a.prev = null; stepAnim(player, 0); }
       player.updateMatrixWorld(true);
       u.bones[u.strikeLimb].getWorldPosition(tmpW);
       const tx = pu.tx, tz = pu.ty, ty = pu.target && pu.target.r ? pu.target.r * RIG_SCALE * 1.4 : 30;
