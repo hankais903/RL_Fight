@@ -880,7 +880,26 @@ function setupHero(model) {
     const sign = tip.getWorldPosition(new THREE.Vector3()).y < y0 ? 1 : -1;
     B[side + 'HandMiddle1'].quaternion.copy(save);
     for (const f of ['Index', 'Middle', 'Ring', 'Pinky']) [1.35, 1.6, 1.3].forEach((a, i) => curl(B[side + 'Hand' + f + (i + 1)], sign * a));
-    curl(B[side + 'HandThumb1'], sign * 0.5); curl(B[side + 'HandThumb2'], sign * 0.7);
+    // 大拇指：繞手指方向的軸往內扣，選讓拇指尖靠近食指的方向
+    const fdir = rest[side + 'HandMiddle1'].wp.clone().sub(rest[side + 'Hand'].wp).normalize();
+    const thumbTip = B[side + 'HandThumb4'] || B[side + 'HandThumb3'];
+    const idx = B[side + 'HandIndex2'];
+    const curlAx = (bone, ax, ang) => {
+      if (!bone) return;
+      model.updateMatrixWorld(true);
+      const pw = bone.parent.getWorldQuaternion(new THREE.Quaternion());
+      const nw = new THREE.Quaternion().setFromAxisAngle(ax, ang).multiply(bone.getWorldQuaternion(new THREE.Quaternion()));
+      bone.quaternion.copy(pw.invert().multiply(nw));
+    };
+    const dist = () => { model.updateMatrixWorld(true); return thumbTip.getWorldPosition(new THREE.Vector3()).distanceTo(idx.getWorldPosition(new THREE.Vector3())); };
+    if (thumbTip && idx) {
+      const t1 = B[side + 'HandThumb1'], keep = t1.quaternion.clone();
+      curlAx(t1, fdir, 0.6); const dA = dist(); t1.quaternion.copy(keep);
+      curlAx(t1, fdir, -0.6); const dB = dist(); t1.quaternion.copy(keep);
+      const ts = dA < dB ? 1 : -1;
+      curlAx(t1, fdir, ts * 0.9);
+      curl(B[side + 'HandThumb2'], sign * 0.6); curl(B[side + 'HandThumb3'], sign * 0.7);
+    }
   }
   model.updateMatrixWorld(true);
   // 縮放：讓模型腿長和動作捕捉骨架一致
@@ -889,18 +908,19 @@ function setupHero(model) {
   const sc = legP / legM;
   const armQ = B.Hips.parent.getWorldQuaternion(new THREE.Quaternion());
   const armInv = new THREE.Matrix4().copy(B.Hips.parent.matrixWorld).invert();
-  // 各骨頭的「子骨頭方向」（靜止時，在自己座標裡）
-  const childOf = { Spine: 'Spine1', Spine1: 'Spine2', Neck: 'Head', LeftShoulder: 'LeftArm', LeftArm: 'LeftForeArm', LeftForeArm: 'LeftHand', LeftHand: 'LeftHandMiddle1',
-    RightShoulder: 'RightArm', RightArm: 'RightForeArm', RightForeArm: 'RightHand', RightHand: 'RightHandMiddle1',
-    LeftUpLeg: 'LeftLeg', LeftLeg: 'LeftFoot', LeftFoot: 'LeftToeBase', LeftToeBase: 'LeftToe_End', RightUpLeg: 'RightLeg', RightLeg: 'RightFoot', RightFoot: 'RightToeBase', RightToeBase: 'RightToe_End' };
-  const childDir = {};
-  for (const k in childOf) if (B[childOf[k]]) childDir[k] = B[childOf[k]].position.clone().normalize();
-  const headTop = B.HeadTop_End ? rest.HeadTop_End.wp : rest.Head.wp.clone().add(new THREE.Vector3(0, 0.1, 0));
-  const restBasis = {
-    Hips: basisQuat(rest.LeftUpLeg.wp.clone().sub(rest.RightUpLeg.wp), rest.Spine1.wp.clone().sub(rest.Hips.wp), new THREE.Quaternion()),
-    Spine2: basisQuat(rest.LeftArm.wp.clone().sub(rest.RightArm.wp), rest.Neck.wp.clone().sub(rest.Spine2.wp), new THREE.Quaternion()),
-    Head: basisQuat(new THREE.Vector3(0, 0, 1), headTop.clone().sub(rest.Head.wp), new THREE.Quaternion()),
-  };
+  // 每根骨頭的固定修正：讓模型靜止時的骨頭方向，對齊動作捕捉骨架靜止時（T 字、朝 +Z）的方向。
+  // 執行時：模型骨頭世界旋轉 = 動作捕捉骨頭世界旋轉 × 修正（扭轉也一起照搬，不會突然翻轉）
+  const offs = {};
+  for (const [tn, sn, srcDir, tc] of HERO_MAP) {
+    const tgt = rest[tn];
+    let fix = new THREE.Quaternion();
+    if (srcDir && tc && rest[tc]) {
+      const dS = srcDir().normalize();
+      const dT = rest[tc].wp.clone().sub(tgt.wp).normalize();
+      fix.setFromUnitVectors(dT, dS);
+    }
+    offs[tn] = fix.multiply(tgt.wq);
+  }
   model.scale.setScalar(sc);
   player.userData.lean.add(model);
   // 隱藏原本的積木身體（骨架保留在背後播動畫）
@@ -911,67 +931,58 @@ function setupHero(model) {
     g.scale.setScalar(0.22); g.position.copy(B[n + 'Middle1'] ? B[n + 'Middle1'].position : new THREE.Vector3(0, 0.05, 0));
     g.visible = false; B[n].add(g); return g;
   });
-  hero = { model, B, rest, childDir, restBasis, armQ, armInv, meshes, glows, inv: new THREE.Matrix4(), W: {} };
+  hero = { model, B, rest, offs, armQ, armInv, meshes, glows, inv: new THREE.Matrix4(), W: {} };
 }
 
-// 每格重定向：從隱藏的動作捕捉骨架讀取姿勢，套到模型骨架
-const HERO_ORDER = [
-  ['Hips', 'two'], ['Spine', 'dir', 'LowerBack', 'Spine'], ['Spine1', 'dir', 'Spine', 'Spine1'], ['Spine2', 'two'],
-  ['Neck', 'dir', 'Neck', 'Head'], ['Head', 'two'],
-  ['LeftShoulder', 'dir', 'LeftShoulder', 'LeftArm'], ['LeftArm', 'dir', 'LeftArm', 'LeftForeArm'], ['LeftForeArm', 'dir', 'LeftForeArm', 'LeftHand'], ['LeftHand', 'dir', 'LeftForeArm', 'LeftHand'],
-  ['RightShoulder', 'dir', 'RightShoulder', 'RightArm'], ['RightArm', 'dir', 'RightArm', 'RightForeArm'], ['RightForeArm', 'dir', 'RightForeArm', 'RightHand'], ['RightHand', 'dir', 'RightForeArm', 'RightHand'],
-  ['LeftUpLeg', 'dir', 'LeftUpLeg', 'LeftLeg'], ['LeftLeg', 'dir', 'LeftLeg', 'LeftFoot'], ['LeftFoot', 'dir', 'LeftFoot', 'LeftToeBase'], ['LeftToeBase', 'dir', 'LeftToeBase', '@LeftToeEnd'],
-  ['RightUpLeg', 'dir', 'RightUpLeg', 'RightLeg'], ['RightLeg', 'dir', 'RightLeg', 'RightFoot'], ['RightFoot', 'dir', 'RightFoot', 'RightToeBase'], ['RightToeBase', 'dir', 'RightToeBase', '@RightToeEnd'],
+// 模型骨頭 ← 動作捕捉骨頭；第三欄是動作捕捉骨架靜止時這根骨頭指向子骨頭的方向，第四欄是模型的子骨頭
+const sOff = n => () => offVec(JI[n]);
+const sEnd = n => () => endVec(JI[n]);
+const HERO_MAP = [
+  ['Hips', 'Hips', null, null],
+  ['Spine', 'LowerBack', sOff('Spine'), 'Spine1'],
+  ['Spine1', 'Spine', sOff('Spine1'), 'Spine2'],
+  ['Spine2', 'Spine1', sOff('Neck1'), 'Neck'],
+  ['Neck', 'Neck1', sOff('Head'), 'Head'],
+  ['Head', 'Head', sEnd('Head'), 'HeadTop_End'],
+  ['LeftShoulder', 'LeftShoulder', sOff('LeftArm'), 'LeftArm'],
+  ['LeftArm', 'LeftArm', sOff('LeftForeArm'), 'LeftForeArm'],
+  ['LeftForeArm', 'LeftForeArm', sOff('LeftHand'), 'LeftHand'],
+  ['LeftHand', 'LeftHand', sOff('LeftHand'), 'LeftHandMiddle1'],
+  ['RightShoulder', 'RightShoulder', sOff('RightArm'), 'RightArm'],
+  ['RightArm', 'RightArm', sOff('RightForeArm'), 'RightForeArm'],
+  ['RightForeArm', 'RightForeArm', sOff('RightHand'), 'RightHand'],
+  ['RightHand', 'RightHand', sOff('RightHand'), 'RightHandMiddle1'],
+  ['LeftUpLeg', 'LeftUpLeg', sOff('LeftLeg'), 'LeftLeg'],
+  ['LeftLeg', 'LeftLeg', sOff('LeftFoot'), 'LeftFoot'],
+  ['LeftFoot', 'LeftFoot', sOff('LeftToeBase'), 'LeftToeBase'],
+  ['LeftToeBase', 'LeftToeBase', sEnd('LeftToeBase'), 'LeftToe_End'],
+  ['RightUpLeg', 'RightUpLeg', sOff('RightLeg'), 'RightLeg'],
+  ['RightLeg', 'RightLeg', sOff('RightFoot'), 'RightFoot'],
+  ['RightFoot', 'RightFoot', sOff('RightToeBase'), 'RightToeBase'],
+  ['RightToeBase', 'RightToeBase', sEnd('RightToeBase'), 'RightToe_End'],
 ];
-const _srcPos = {};
+// 每格重定向：從隱藏的動作捕捉骨架讀取每根骨頭的完整旋轉，乘上固定修正後套到模型
+const _qm = new THREE.Quaternion(), _qs = new THREE.Quaternion(), _qp = new THREE.Quaternion();
 function retargetHero(elements, hurt) {
   const h = hero;
   if (!h) return;
   const pb = player.userData.bones;
   player.updateMatrixWorld(true);
-  h.inv.copy(h.model.matrixWorld).invert();
-  const P = n => {
-    if (_srcPos[n]) return _srcPos[n];
-    const v = new THREE.Vector3();
-    if (n[0] === '@') { const key = n.slice(1); const j = key === 'HeadEnd' ? JI.Head : JI[key.replace('End', 'Base')]; pb[j].localToWorld(v.copy(endVec(j))); }
-    else pb[JI[n]].getWorldPosition(v);
-    return (_srcPos[n] = v.applyMatrix4(h.inv));
-  };
-  for (const k in _srcPos) delete _srcPos[k];
+  h.model.getWorldQuaternion(_qm).invert();
   const W = h.W;
-  const parentQ = name => { const par = h.B[name].parent; const pn = par.name.replace(/^mixamorig:?/, ''); return W[pn] || h.armQ; };
-  for (const [name, op, a, b] of HERO_ORDER) {
-    const bone = h.B[name];
-    const pq = parentQ(name);
-    let nw;
-    if (op === 'two') {
-      let va, vb;
-      if (name === 'Hips') { va = P('LeftUpLeg').clone().sub(P('RightUpLeg')); vb = P('Spine1').clone().sub(P('Hips')); }
-      else if (name === 'Spine2') { va = P('LeftArm').clone().sub(P('RightArm')); vb = P('Neck').clone().sub(P('Spine1')); }
-      else {
-        // 頭：上方＝頭頂方向，前方＝動作骨架頭部的正面（靜止時朝 +Z）
-        vb = P('@HeadEnd').clone().sub(P('Head'));
-        pb[JI.Head].getWorldQuaternion(_q1);
-        h.model.getWorldQuaternion(_q2);
-        va = new THREE.Vector3(0, 0, 1).applyQuaternion(_q1).applyQuaternion(_q2.invert());
-      }
-      const cur = basisQuat(va, vb, new THREE.Quaternion());
-      nw = cur.multiply(h.restBasis[name].clone().invert()).multiply(h.rest[name].wq);
-    } else {
-      const cw = pq.clone().multiply(h.rest[name].lq);
-      const cd = h.childDir[name];
-      const d = P(b).clone().sub(P(a));
-      if (!cd || d.lengthSq() < 1e-8) { nw = cw; }
-      else {
-        const v = cd.clone().applyQuaternion(cw);
-        nw = new THREE.Quaternion().setFromUnitVectors(v, d.normalize()).multiply(cw);
-      }
-    }
-    W[name] = nw;
-    bone.quaternion.copy(pq.clone().invert().multiply(nw));
+  for (const [tn, sn] of HERO_MAP) {
+    const bone = h.B[tn];
+    if (!bone) continue;
+    pb[JI[sn]].getWorldQuaternion(_qs);
+    const nw = (W[tn] || (W[tn] = new THREE.Quaternion())).copy(_qm).multiply(_qs).multiply(h.offs[tn]);
+    const pn = bone.parent.name.replace(/^mixamorig:?/, '');
+    _qp.copy(W[pn] || h.armQ).invert();
+    bone.quaternion.copy(_qp.multiply(nw));
   }
   // 髖部位置
-  h.B.Hips.position.copy(P('Hips')).applyMatrix4(h.armInv);
+  h.inv.copy(h.model.matrixWorld).invert();
+  pb[JI.Hips].getWorldPosition(_v1).applyMatrix4(h.inv);
+  h.B.Hips.position.copy(_v1).applyMatrix4(h.armInv);
   // 元素光暈、受傷閃紅
   const sk = elements || {};
   const gc = sk.firePunch ? '#ff7a2a' : sk.thunderPunch ? '#ffe14a' : sk.icePunch ? '#7cd8ff' : null;
