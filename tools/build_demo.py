@@ -5,19 +5,25 @@ out = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else root / 'dist' / 'rl-fi
 css = (root / 'css/style.css').read_text(encoding='utf-8')
 data = (root / 'js/data.js').read_text(encoding='utf-8')
 game = (root / 'js/game.js').read_text(encoding='utf-8')
+r3d = (root / 'js/render3d.js').read_text(encoding='utf-8')
 html = f"""<title>RL Fight</title>
 <style>
 :root {{ color-scheme: dark; }}
 {css}
 </style>
 <div id="stage">
+  <canvas id="world"></canvas>
   <canvas id="game"></canvas>
   <button id="pauseBtn" class="hidden" aria-label="暫停">❚❚</button>
   <button id="ultBtn" class="hidden" aria-label="連擊爆發">爆發</button>
   <div id="overlay" class="hidden"></div>
 </div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 {data}
+</script>
+<script>
+{r3d}
 </script>
 <script>
 {game}

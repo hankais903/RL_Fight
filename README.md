@@ -1,6 +1,6 @@
 # RL Fight（Roguelike 拳擊）
 
-俯視角的 Roguelike 割草拳擊遊戲。玩法方向參考 *Endless Puncher*（主角站在場中央、橡皮手臂自動揍飛四面八方湧來的敵人），角色、美術與數值皆為原創。
+3D 斜俯視的 Roguelike 割草拳擊遊戲（Three.js）。玩法方向參考 *Endless Puncher*（主角站在場中央、橡皮手臂自動揍飛四面八方湧來的敵人），角色、美術與數值皆為原創。
 
 ## 怎麼玩
 
@@ -32,7 +32,9 @@
 index.html            進入點
 css/style.css         介面樣式
 js/data.js            敵人、強化、技能、元素組合、道場資料（調數值改這裡）
-js/game.js            遊戲邏輯、繪圖、輸入、音效
+js/game.js            遊戲邏輯、2D 介面、輸入、音效
+js/render3d.js        3D 畫面（Three.js）：擂台、角色、特效
+vendor/three.min.js   Three.js r128（MIT 授權），讓本機離線也能玩
 tools/build_demo.py   打包成單一 HTML（試玩版）
 docs/                 參考遊戲系統分析
 ```

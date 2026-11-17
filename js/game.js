@@ -13,7 +13,6 @@ const pauseBtn = document.getElementById('pauseBtn');
 const ultBtn = document.getElementById('ultBtn');
 
 let SW = 0, SH = 0, S = 1, CX = 0, CY = 0;
-let bgCanvas = document.createElement('canvas');
 
 // ---------- 畫面縮放 ----------
 function resize() {
@@ -30,7 +29,7 @@ function resize() {
   CX = SW / 2;
   CY = topUI + (SH - topUI - botUI) / 2;
   document.getElementById('stage').style.fontSize = clamp(Math.min(SW, SH) / 40, 11, 18) + 'px';
-  buildBackground(dpr);
+  R3D.resize(SW, SH, window.devicePixelRatio || 1);
 }
 
 // ---------- 存檔 ----------
@@ -613,6 +612,7 @@ function updateEnemies(dt) {
       if (e.burn && e.burn.t <= 0) e.burn = null;
       if (e.dead) continue;
     }
+    if (e.burn && Math.random() < 0.3) run.fx.push({ kind: 'dot', x: e.x + rand(-e.r, e.r), y: e.y + rand(-e.r, e.r), vx: 0, vy: -40, size: 4, color: Math.random() < 0.5 ? '#ff7a2a' : '#ffd23a', life: 0.35, max: 0.35 });
     e.slowT -= dt;
     e.freezeT -= dt;
     // 擊退
@@ -1201,335 +1201,7 @@ window.addEventListener('keydown', ev => {
 document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
 window.addEventListener('resize', resize);
 
-// ---------- 繪圖 ----------
-function octagon(c, r) {
-  c.beginPath();
-  for (let i = 0; i < 8; i++) {
-    const a = Math.PI / 8 + i * Math.PI / 4;
-    c.lineTo(Math.cos(a) * r, Math.sin(a) * r);
-  }
-  c.closePath();
-}
-
-function buildBackground(dpr) {
-  bgCanvas.width = Math.round(SW * dpr);
-  bgCanvas.height = Math.round(SH * dpr);
-  const b = bgCanvas.getContext('2d');
-  b.setTransform(dpr, 0, 0, dpr, 0, 0);
-  // 場外：暗色觀眾席
-  const g = b.createRadialGradient(CX, CY, ARENA * S * 0.5, CX, CY, Math.max(SW, SH) * 0.8);
-  g.addColorStop(0, '#1d1a26');
-  g.addColorStop(1, '#09080d');
-  b.fillStyle = g;
-  b.fillRect(0, 0, SW, SH);
-  // 觀眾（頭頂的小圓點）
-  const rng = mulberry(7);
-  for (let i = 0; i < 420; i++) {
-    const a = rng() * Math.PI * 2, rr = ARENA * S * (1.12 + rng() * 1.6);
-    const x = CX + Math.cos(a) * rr, y = CY + Math.sin(a) * rr;
-    if (x < -10 || x > SW + 10 || y < -10 || y > SH + 10) continue;
-    b.fillStyle = `hsla(${(rng() * 360) | 0}, 18%, ${11 + rng() * 8}%, 1)`;
-    b.beginPath(); b.arc(x, y, (4 + rng() * 2.5) * S, 0, Math.PI * 2); b.fill();
-  }
-  b.save();
-  b.translate(CX, CY);
-  b.scale(S, S);
-  // 地板
-  octagon(b, ARENA + 18);
-  b.fillStyle = '#16161c';
-  b.fill();
-  octagon(b, ARENA);
-  const fg = b.createRadialGradient(0, 0, 40, 0, 0, ARENA);
-  fg.addColorStop(0, '#3a3f4a');
-  fg.addColorStop(1, '#262a33');
-  b.fillStyle = fg;
-  b.fill();
-  // 地板紋路
-  b.save();
-  octagon(b, ARENA);
-  b.clip();
-  b.strokeStyle = 'rgba(255,255,255,0.035)';
-  b.lineWidth = 2;
-  for (let i = -ARENA; i < ARENA; i += 40) {
-    b.beginPath(); b.moveTo(i, -ARENA); b.lineTo(i, ARENA); b.stroke();
-    b.beginPath(); b.moveTo(-ARENA, i); b.lineTo(ARENA, i); b.stroke();
-  }
-  // 中央標誌
-  b.strokeStyle = 'rgba(63,224,197,0.18)';
-  b.lineWidth = 6;
-  b.beginPath(); b.arc(0, 0, 70, 0, Math.PI * 2); b.stroke();
-  b.font = '900 34px system-ui, sans-serif';
-  b.fillStyle = 'rgba(63,224,197,0.12)';
-  b.textAlign = 'center'; b.textBaseline = 'middle';
-  b.fillText('RL', 0, 0);
-  b.restore();
-  // 鐵絲網圍欄
-  octagon(b, ARENA + 6);
-  b.strokeStyle = '#555c66';
-  b.lineWidth = 10;
-  b.stroke();
-  octagon(b, ARENA + 6);
-  b.setLineDash([3, 5]);
-  b.strokeStyle = '#8a929c';
-  b.lineWidth = 4;
-  b.stroke();
-  b.setLineDash([]);
-  // 霓虹柱
-  for (let i = 0; i < 8; i++) {
-    const a = Math.PI / 8 + i * Math.PI / 4;
-    const x = Math.cos(a) * (ARENA + 6), y = Math.sin(a) * (ARENA + 6);
-    b.fillStyle = 'rgba(63,224,197,0.25)';
-    b.beginPath(); b.arc(x, y, 18, 0, Math.PI * 2); b.fill();
-    b.fillStyle = '#3fe0c5';
-    b.beginPath(); b.arc(x, y, 8, 0, Math.PI * 2); b.fill();
-  }
-  b.restore();
-}
-function mulberry(a) {
-  return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
-}
-
-// 俯視角色：肩膀、頭、兩個拳頭
-function drawFighter(x, y, r, color, face, anim, o = {}) {
-  ctx.save();
-  ctx.translate(x, y);
-  // 影子
-  ctx.fillStyle = 'rgba(0,0,0,0.35)';
-  ctx.beginPath(); ctx.ellipse(3, 5, r * 1.1, r * 0.95, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.rotate(face);
-  const step = Math.sin(anim * 10) * r * 0.25;
-  const lunge = o.lunge ? r * 0.6 : 0;
-  // 拳頭
-  const fistC = o.flash ? '#fff' : shade(color, -35);
-  if (!o.noFists) {
-    ctx.fillStyle = fistC;
-    ctx.beginPath(); ctx.arc(r * 0.75 + step + lunge, -r * 0.8, r * 0.38, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(r * 0.75 - step, r * 0.8, r * 0.38, 0, Math.PI * 2); ctx.fill();
-  }
-  // 肩膀
-  ctx.fillStyle = o.flash ? '#fff' : color;
-  ctx.beginPath(); ctx.ellipse(0, 0, r * 0.75, r * 1.05, 0, 0, Math.PI * 2); ctx.fill();
-  // 頭
-  ctx.fillStyle = o.flash ? '#fff' : (o.head || shade(color, 25));
-  ctx.beginPath(); ctx.arc(r * 0.1, 0, r * 0.55, 0, Math.PI * 2); ctx.fill();
-  if (o.extra) o.extra(r);
-  ctx.restore();
-}
-
-function drawEnemy(e) {
-  const T = e.T;
-  let color = T.color;
-  if (e.freezeT > 0) color = '#a8e4ff';
-  const wind = e.state === 'wind' && Math.floor(time * 16) % 2 === 0;
-  drawFighter(e.x, e.y, e.r, color, e.face, e.freezeT > 0 ? 0 : e.anim, {
-    flash: e.flash > 0 || wind, lunge: e.lunge > 0,
-    extra: r => {
-      if (e.type === 'bomber') {
-        ctx.fillStyle = Math.floor(time * 12) % 2 ? '#ffe14a' : '#ff5a1f';
-        ctx.beginPath(); ctx.arc(-r * 0.3, 0, r * 0.22, 0, Math.PI * 2); ctx.fill();
-      } else if (e.type === 'spore') {
-        ctx.fillStyle = '#e7f5c0';
-        for (const [a, b] of [[0.2, -0.25], [-0.15, 0.2], [0.3, 0.25]]) { ctx.beginPath(); ctx.arc(r * a, r * b, r * 0.12, 0, Math.PI * 2); ctx.fill(); }
-      } else if (e.type === 'drummer') {
-        ctx.strokeStyle = '#cfe3ff'; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(r * 0.1, 0, r * 0.35, 0, Math.PI * 2); ctx.stroke();
-      } else if (e.type === 'goldie') {
-        ctx.fillStyle = '#7a5a10';
-        ctx.font = `900 ${r * 0.9}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText('$', r * 0.1, 0);
-      } else if (T.boss) {
-        ctx.fillStyle = '#ffd84a';
-        ctx.beginPath();
-        for (let i = 0; i < 5; i++) {
-          const a = i * Math.PI * 2 / 5;
-          ctx.lineTo(r * 0.1 + Math.cos(a) * r * 0.45, Math.sin(a) * r * 0.45);
-          ctx.lineTo(r * 0.1 + Math.cos(a + 0.6) * r * 0.25, Math.sin(a + 0.6) * r * 0.25);
-        }
-        ctx.closePath(); ctx.fill();
-      }
-    },
-  });
-  if (e.burn) {
-    if (Math.random() < 0.3) run.fx.push({ kind: 'dot', x: e.x + rand(-e.r, e.r), y: e.y + rand(-e.r, e.r), vx: 0, vy: -40, size: rand(3, 5), color: Math.random() < 0.5 ? '#ff7a2a' : '#ffd23a', life: 0.35, max: 0.35 });
-  }
-  if (e.slowT > 0 && e.freezeT <= 0) {
-    ctx.strokeStyle = 'rgba(155,231,255,0.6)'; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(e.x, e.y, e.r + 3, 0, Math.PI * 2); ctx.stroke();
-  }
-  if (e.shield > 0) {
-    ctx.strokeStyle = '#5fa8ff'; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.arc(e.x, e.y, e.r + 5, 0, Math.PI * 2); ctx.stroke();
-  }
-  if (e.state === 'wind' && (T.charge || T.boss === 'charge')) {
-    ctx.strokeStyle = 'rgba(255,80,60,0.5)'; ctx.lineWidth = e.r;
-    ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(e.x + Math.cos(e.face) * 200, e.y + Math.sin(e.face) * 200); ctx.stroke();
-  }
-  if (e.state === 'wind' && T.boss === 'slam') {
-    ctx.fillStyle = 'rgba(255,60,40,0.18)';
-    ctx.beginPath(); ctx.arc(e.x, e.y, 170 * (1 - e.stateT), 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = 'rgba(255,60,40,0.6)'; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.arc(e.x, e.y, 170, 0, Math.PI * 2); ctx.stroke();
-  }
-  if (e.maxHp > pDmg() * 2.5 && e.hp < e.maxHp && !T.boss) {
-    const w = e.r * 2;
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect(e.x - w / 2, e.y - e.r - 9, w, 4);
-    ctx.fillStyle = '#ff5a4a';
-    ctx.fillRect(e.x - w / 2, e.y - e.r - 9, w * Math.max(0, e.hp / e.maxHp), 4);
-  }
-}
-
-function drawBody(b) {
-  const a = Math.min(1, b.life / 0.6);
-  ctx.globalAlpha = a * 0.9;
-  const s = 1 + b.z / 250;
-  ctx.save();
-  ctx.translate(b.x, b.y - b.z * 0.4);
-  ctx.scale(s, s);
-  drawFighter(0, 0, b.r, '#7b808c', b.rot, 0, { head: '#959aa6' });
-  ctx.restore();
-  ctx.globalAlpha = 1;
-}
-
-// 主角與橡皮鐵臂
-function drawPlayer() {
-  const p = run ? run.p : demo;
-  const skin = '#f4c38f', glove = '#ff4d4d';
-  const face = p.facing;
-  const shoulder = side => ({ x: Math.cos(face + side * Math.PI / 2) * 12, y: Math.sin(face + side * Math.PI / 2) * 12 });
-  // 伸長的手臂（畫在身體下層）
-  const busy = { '-1': false, '1': false };
-  for (const pu of p.punches) {
-    const t = pu.t / pu.dur;
-    const ext = t < 0.45 ? t / 0.45 : 1 - (t - 0.45) / 0.55;
-    const sh = shoulder(pu.side);
-    busy[pu.side] = true;
-    const tx = sh.x + (pu.tx - sh.x) * ext, ty = sh.y + (pu.ty - sh.y) * ext;
-    // 稍微彎曲的橡皮手臂
-    const mx = (sh.x + tx) / 2 + Math.cos(face) * 0 - (ty - sh.y) * 0.12 * pu.side;
-    const my = (sh.y + ty) / 2 + (tx - sh.x) * 0.12 * pu.side;
-    ctx.strokeStyle = shade(skin, -30); ctx.lineWidth = 9; ctx.lineCap = 'round';
-    ctx.beginPath(); ctx.moveTo(sh.x, sh.y); ctx.quadraticCurveTo(mx, my, tx, ty); ctx.stroke();
-    ctx.strokeStyle = skin; ctx.lineWidth = 6;
-    ctx.beginPath(); ctx.moveTo(sh.x, sh.y); ctx.quadraticCurveTo(mx, my, tx, ty); ctx.stroke();
-    ctx.fillStyle = glove;
-    ctx.beginPath(); ctx.arc(tx, ty, 9 + ext * 2, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = 'rgba(255,255,255,0.35)';
-    ctx.beginPath(); ctx.arc(tx - 3, ty - 3, 3, 0, Math.PI * 2); ctx.fill();
-  }
-  const hurt = p.hurtT > 0;
-  drawFighter(0, 0, PLAYER_R, hurt ? '#ff8a8a' : '#ffc83d', face, time * 0.3, {
-    noFists: true, head: '#3a2618',
-    extra: r => {
-      // 頭帶
-      ctx.strokeStyle = '#e8453c'; ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.arc(r * 0.1, 0, r * 0.5, 0, Math.PI * 2); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(-r * 0.4, 0); ctx.lineTo(-r * 1.2, Math.sin(time * 9) * 5 + 3); ctx.stroke();
-    },
-  });
-  // 待命的拳套
-  for (const side of [-1, 1]) {
-    if (busy[side]) continue;
-    const a = face + side * 0.75;
-    ctx.fillStyle = glove;
-    ctx.beginPath(); ctx.arc(Math.cos(a) * 20, Math.sin(a) * 20, 8, 0, Math.PI * 2); ctx.fill();
-  }
-  if (run && p.shield > 0) {
-    ctx.strokeStyle = 'rgba(124,200,255,0.8)'; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.arc(0, 0, 28, 0, Math.PI * 2); ctx.stroke();
-  }
-}
-
-function drawWorld() {
-  const p = run.p;
-  // 出拳範圍
-  ctx.strokeStyle = 'rgba(255,216,74,0.22)';
-  ctx.lineWidth = 3;
-  ctx.setLineDash([10, 8]);
-  ctx.beginPath(); ctx.arc(0, 0, p.range, 0, Math.PI * 2); ctx.stroke();
-  ctx.setLineDash([]);
-  // 區域
-  for (const z of run.zones) {
-    const a = Math.min(1, z.t / 0.5) * (0.5 + Math.sin(time * 10) * 0.1);
-    ctx.fillStyle = z.kind === 'fire' ? `rgba(255,110,40,${0.3 * a})` : `rgba(140,200,60,${0.3 * a})`;
-    ctx.beginPath(); ctx.arc(z.x, z.y, z.r, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = z.kind === 'fire' ? `rgba(255,170,60,${0.7 * a})` : `rgba(170,230,80,${0.6 * a})`;
-    ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.arc(z.x, z.y, z.r, 0, Math.PI * 2); ctx.stroke();
-  }
-  // 天降鐵拳的預警圈
-  for (const m of run.marks) {
-    const k = 1 - m.t / m.max;
-    ctx.strokeStyle = 'rgba(255,216,74,0.7)'; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(m.x, m.y, m.r, 0, Math.PI * 2); ctx.stroke();
-    ctx.fillStyle = 'rgba(255,216,74,0.2)';
-    ctx.beginPath(); ctx.arc(m.x, m.y, m.r * k, 0, Math.PI * 2); ctx.fill();
-    // 落下中的拳頭（越來越小 = 越來越近）
-    const s = 1 + (1 - k) * 2;
-    ctx.globalAlpha = 0.4 + k * 0.6;
-    ctx.fillStyle = '#ff4d4d';
-    ctx.beginPath(); ctx.arc(m.x, m.y - (1 - k) * 60, 16 * s, 0, Math.PI * 2); ctx.fill();
-    ctx.globalAlpha = 1;
-  }
-  for (const b of run.bodies) if (b.z <= 0) drawBody(b);
-  // 經驗與金幣
-  for (const o of run.orbs) {
-    ctx.fillStyle = o.kind === 'xp' ? '#5ef2a0' : '#ffd84a';
-    ctx.beginPath(); ctx.arc(o.x, o.y, o.kind === 'xp' ? 4 : 5, 0, Math.PI * 2); ctx.fill();
-  }
-  const sorted = run.enemies.slice().sort((a, b) => a.y - b.y);
-  for (const e of sorted) if (!e.dead) drawEnemy(e);
-  drawPlayer();
-  if (run.skills.orbit && run.skills.orbit.pos) {
-    for (const pos of run.skills.orbit.pos) {
-      ctx.fillStyle = 'rgba(255,77,77,0.25)';
-      ctx.beginPath(); ctx.arc(pos.x, pos.y, 18, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#ff4d4d';
-      ctx.beginPath(); ctx.arc(pos.x, pos.y, 11, 0, Math.PI * 2); ctx.fill();
-    }
-  }
-  for (const b of run.bodies) if (b.z > 0) drawBody(b);
-  for (const pr of run.projs) {
-    ctx.save(); ctx.translate(pr.x, pr.y); ctx.rotate(Math.atan2(pr.vy, pr.vx));
-    ctx.fillStyle = '#ff4d4d';
-    ctx.beginPath(); ctx.ellipse(0, 0, 15, 11, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#ffe08a';
-    ctx.beginPath(); ctx.moveTo(-12, -6); ctx.lineTo(-28, 0); ctx.lineTo(-12, 6); ctx.fill();
-    ctx.restore();
-  }
-  for (const b of run.eprojs) {
-    ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(b.rot);
-    ctx.fillStyle = '#6b4a2b'; ctx.fillRect(-4, -8, 8, 16);
-    ctx.fillStyle = '#a07850'; ctx.fillRect(-2.5, -12, 5, 5);
-    ctx.restore();
-  }
-  // 特效
-  for (const f of run.fx) {
-    const a = Math.max(0, f.life / f.max);
-    ctx.globalAlpha = a;
-    if (f.kind === 'dot') { ctx.fillStyle = f.color; ctx.fillRect(f.x - f.size / 2, f.y - f.size / 2, f.size, f.size); }
-    else if (f.kind === 'ring') { ctx.strokeStyle = f.color; ctx.lineWidth = f.w * a + 1; ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2); ctx.stroke(); }
-    else if (f.kind === 'line') { ctx.strokeStyle = f.color; ctx.lineWidth = f.w; ctx.beginPath(); ctx.moveTo(f.x1, f.y1); ctx.lineTo(f.x2, f.y2); ctx.stroke(); }
-    else if (f.kind === 'bolt') {
-      for (const [w, c] of [[7, 'rgba(120,180,255,0.5)'], [3, '#ffffff']]) {
-        ctx.strokeStyle = c; ctx.lineWidth = w;
-        ctx.beginPath(); f.pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
-      }
-    }
-  }
-  ctx.globalAlpha = 1;
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  for (const t of run.texts) {
-    ctx.globalAlpha = Math.min(1, t.life / t.max * 2);
-    ctx.font = `900 ${t.size}px system-ui, sans-serif`;
-    ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,0.7)';
-    ctx.strokeText(t.text, t.x, t.y);
-    ctx.fillStyle = t.color;
-    ctx.fillText(t.text, t.x, t.y);
-  }
-  ctx.globalAlpha = 1;
-}
-
+// ---------- 2D 介面繪圖（3D 場景由 render3d.js 負責） ----------
 function outlineText(text, x, y, size, color, align = 'left') {
   ctx.font = `900 ${size}px system-ui, sans-serif`;
   ctx.textAlign = align; ctx.textBaseline = 'middle';
@@ -1618,17 +1290,32 @@ function drawHUD() {
 }
 
 // 標題畫面用的展示主角
-const demo = { facing: 0, punches: [], hurtT: 0 };
+const demo = { facing: 0, punches: [], hurtT: 0, range: 150 };
 let demoT = 0;
 
+// 傷害數字與血條（投影到 3D 位置上）
+function drawWorldOverlay() {
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const e of run.enemies) {
+    if (e.dead || e.T.boss || e.hp >= e.maxHp || e.maxHp <= pDmg() * 2.5) continue;
+    const s = R3D.project(e.x, e.y, e.r * 2.6);
+    const w = e.r * 1.6;
+    bar(s.x - w / 2, s.y, w, 4, e.hp / e.maxHp, '#ff5a4a', 'rgba(0,0,0,0.6)');
+  }
+  for (const t of run.texts) {
+    const s = R3D.project(t.x, t.y, 40 + (1 - t.life / t.max) * 30);
+    ctx.globalAlpha = Math.min(1, t.life / t.max * 2);
+    ctx.font = `900 ${t.size}px system-ui, sans-serif`;
+    ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+    ctx.strokeText(t.text, s.x, s.y);
+    ctx.fillStyle = t.color;
+    ctx.fillText(t.text, s.x, s.y);
+  }
+  ctx.globalAlpha = 1;
+}
+
 function render(dt) {
-  ctx.drawImage(bgCanvas, 0, 0, SW, SH);
-  ctx.save();
-  if (run && run.shake > 0) ctx.translate(rand(-1, 1) * run.shake, rand(-1, 1) * run.shake);
-  ctx.translate(CX, CY);
-  ctx.scale(S, S);
-  if (run) drawWorld();
-  else {
+  if (!run) {
     // 標題：主角對空揮拳
     demoT -= dt;
     if (demoT <= 0) {
@@ -1639,11 +1326,14 @@ function render(dt) {
     }
     for (const pu of demo.punches) pu.t += dt;
     demo.punches = demo.punches.filter(pu => pu.t < pu.dur);
-    drawPlayer();
   }
-  ctx.restore();
-  if (run && (state === 'play' || state === 'pause' || state === 'levelup')) drawHUD();
-  if (run && run.flash > 0) { ctx.fillStyle = `rgba(255,40,40,${run.flash})`; ctx.fillRect(0, 0, SW, SH); }
+  R3D.render(run, demo, time, run ? run.shake * 0.8 : 0);
+  ctx.clearRect(0, 0, SW, SH);
+  if (run && (state === 'play' || state === 'pause' || state === 'levelup')) {
+    drawWorldOverlay();
+    drawHUD();
+  }
+  if (run && run.flash > 0) { ctx.fillStyle = `rgba(255,40,40,${run.flash * 0.8})`; ctx.fillRect(0, 0, SW, SH); }
 }
 
 // ---------- 主迴圈 ----------
@@ -1661,6 +1351,7 @@ function frame(now) {
 // 測試用掛鉤
 window.__rlfight = { get state() { return state; }, get run() { return run; }, startRun, pick, useUlt };
 
+R3D.init(document.getElementById('world'), { ARENA, PLAYER_R });
 resize();
 showTitle();
 requestAnimationFrame(frame);
