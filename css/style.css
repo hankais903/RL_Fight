@@ -70,8 +70,8 @@ body { display: flex; align-items: center; justify-content: center; }
 #ultBtn {
   --fill: 0%;
   position: absolute; left: 50%; bottom: max(14px, env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
-  width: 9em; height: 3.2em; border-radius: 1.6em; border: .15em solid #ff4fd8; cursor: pointer;
-  font: inherit; font-size: 1.05em; font-weight: 900; letter-spacing: .2em; color: #fff;
+  width: 11em; height: 2.6em; border-radius: 1.3em; border: .15em solid #ff4fd8; pointer-events: none;
+  font: inherit; font-size: .95em; font-weight: 900; letter-spacing: .08em; color: #fff;
   background: linear-gradient(90deg, rgba(255,79,216,.55) var(--fill), rgba(20,16,30,.8) var(--fill));
   opacity: .75;
 }

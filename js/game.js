@@ -88,7 +88,8 @@ const SFX = {
     const n = performance.now(); if (n - lastHitSound < 30) return; lastHitSound = n;
     noise(0.09, 0.32, 900);            // 悶響
     tone(120, 0.12, 'sine', 0.3, -80);  // 低頻「砰」
-    noise(0.03, 0.12, 3000, 'highpass'); // 皮革拍擊
+    noise(0.03, 0.16, 3000, 'highpass'); // 皮革拍擊
+    tone(60, 0.16, 'sine', 0.25, -25);   // 胸腔共鳴
   },
   crit: () => {
     noise(0.16, 0.4, 700);
@@ -158,7 +159,7 @@ function newRun() {
     enemies: [], projs: [], eprojs: [], fx: [], texts: [], bodies: [], zones: [], orbs: [], marks: [],
     skills: {}, stats: {}, syn: {}, rerolls: metaLv('reroll'),
     toSpawn: [], spawnT: 0, waveActive: false, waveDelay: 1.2, bossRef: null,
-    shake: 0, shakeDir: 0, zoom: 0, hitstop: 0, flash: 0, banner: null, pendingLevels: 0, choices: [],
+    shake: 0, shakeDir: 0, zoom: 0, slowmo: 0, comboPop: 0, hitstop: 0, flash: 0, banner: null, pendingLevels: 0, choices: [],
     skillFlash: {}, castCount: {},
   };
 }
@@ -183,7 +184,7 @@ const COMBO_DMG = [1, 1, 1.1, 1.2, 1.3, 1.5];
 function scaling() {
   const c = run.chapter, w = run.wave;
   return {
-    hp: Math.pow(1.75, c - 1) * (1 + 0.13 * (w - 1)),
+    hp: Math.pow(1.75, c - 1) * (1 + 0.09 * (w - 1)),
     dmg: Math.pow(1.35, c - 1) * (1 + 0.05 * (w - 1)),
   };
 }
@@ -199,7 +200,6 @@ function buildWave() {
   }
   const pool = [['grunt', 10]];
   if (w >= 2 || c > 1) pool.push(['runner', 5]);
-  if (w >= 3 || c > 1) pool.push(['thrower', 3]);
   if (w >= 4 || c > 1) pool.push(['tank', 2 + c]);
   if (w >= 5 || c > 1) pool.push(['bomber', 3]);
   if (w >= 6 || c > 1) pool.push(['charger', 2 + c * 0.5]);
@@ -275,10 +275,7 @@ function updatePlayer(dt) {
   p.punchT -= dt;
   const rate = p.rate * (tier >= 4 ? 0.75 : 1);
   if (p.punchT <= 0) {
-    // 飛來的酒瓶優先打掉
-    const bottle = run.eprojs.find(b => !b.dead && !b.swatted && b.x * b.x + b.y * b.y < (p.range * 0.7) ** 2);
-    if (bottle) { bottle.swatted = true; p.punchT = rate * 0.6; launchPunch(bottle, rate); }
-    const targets = bottle ? [] : nearestEnemies(p.range, p.multi);
+    const targets = nearestEnemies(p.range, p.multi);
     if (targets.length) {
       p.punchT = rate;
       for (const t of targets) launchPunch(t, rate);
@@ -355,7 +352,7 @@ function damageEnemy(e, amount, o = {}) {
   }
   if (run.p.lifesteal && a > 0) run.p.hp = Math.min(run.p.maxHp, run.p.hp + a * run.p.lifesteal);
   if (o.show || o.crit || a >= pDmg() * 3) {
-    if (run.texts.length < 70) addText(e.x + rand(-6, 6), e.y, o.crit ? fmt(a) + '!' : fmt(a), o.crit ? '#ffd23a' : '#ffffff', o.crit ? 26 : 17);
+    if (run.texts.length < 70) addText(e.x + rand(-6, 6), e.y, o.crit ? fmt(a) + '!' : fmt(a), o.crit ? '#ffd23a' : '#ffffff', o.crit ? 30 : 20);
   }
   e.squash = 0.12;
   if (o.punch) {
@@ -364,8 +361,8 @@ function damageEnemy(e, amount, o = {}) {
     run.fx.push({ kind: 'impact', x: hx, y: hy, h: e.r * 1.2, size: o.crit ? 1.7 : 1, color: o.crit ? '#ffe14a' : '#ffffff', life: 0.13, max: 0.13 });
     run.fx.push({ kind: 'ring', x: hx, y: hy, r: 4, maxR: o.crit ? 46 : 28, life: 0.18, max: 0.18, color: o.crit ? '#ffd84a' : '#ffffff', w: 4 });
     e.stun = Math.max(e.stun || 0, o.crit ? 0.35 : 0.2);
-    run.hitstop = Math.max(run.hitstop, o.crit ? 0.075 : 0.035);
-    run.shake = Math.max(run.shake, o.crit ? 9 : 4);
+    run.hitstop = Math.max(run.hitstop, o.crit ? 0.08 : 0.04);
+    run.shake = Math.max(run.shake, o.crit ? 13 : 6);
     run.shakeDir = o.dir;
     if (o.crit) run.zoom = Math.max(run.zoom, 0.035);
     if (o.crit) SFX.crit(); else SFX.hit();
@@ -380,6 +377,9 @@ function killEnemy(e, o = {}) {
   run.kills++;
   run.combo = Math.floor(run.combo) + 1;
   run.comboIdle = 0;
+  run.comboPop = 0.15;
+  const CALL = { 10: ['不錯！', '#ffe14a'], 25: ['很猛！', '#ffb03a'], 50: ['無雙！', '#ff7a3c'], 100: ['拳神降臨！', '#ff4fd8'], 200: ['天下無敵！', '#ff4fd8'] };
+  if (CALL[run.combo]) { setBanner(CALL[run.combo][0], CALL[run.combo][1], 1.1); SFX.level(); }
   run.maxCombo = Math.max(run.maxCombo, run.combo);
   run.ult = Math.min(run.ultMax, run.ult + (e.T.boss ? 20 : 1));
   run.score += Math.round(e.T.xp * 10 * COMBO_DMG[comboTier()]);
@@ -390,10 +390,14 @@ function killEnemy(e, o = {}) {
   // 被揍飛的身體
   const dir = o.dir !== undefined ? o.dir : Math.atan2(e.y, e.x);
   const sp = rand(520, 780) / Math.sqrt(e.T.mass) * (e.T.boss ? 0.4 : 1);
-  if (o.punch) { run.hitstop = Math.max(run.hitstop, 0.05); run.shake = Math.max(run.shake, 6); }
+  if (o.punch) {
+    run.hitstop = Math.max(run.hitstop, 0.06);
+    run.shake = Math.max(run.shake, 9);
+    if (o.crit) { run.slowmo = 0.18; run.zoom = Math.max(run.zoom, 0.05); }
+  }
   run.bodies.push({ x: e.x, y: e.y, vx: Math.cos(dir) * sp, vy: Math.sin(dir) * sp, z: 0, vz: rand(280, 420),
     rot: rand(0, 6), vr: rand(-12, 12), r: e.r, life: 2.2, type: e.type });
-  if (run.bodies.length > 90) run.bodies.shift();
+  if (run.bodies.length > 50) run.bodies.shift();
   if (e.T.explode) explosion(e.x, e.y, 70, pDmg() * 2.5, false, '#ff9a3c');
   if (e.burn && run.syn.combust) explosion(e.x, e.y, 60, pDmg() * 1.5, false, '#ff7a2a');
   if (e.T.poison) run.zones.push({ kind: 'poison', x: e.x, y: e.y, r: 42, t: 4, max: 4, tick: 0 });
@@ -508,9 +512,8 @@ const SKILLS = {
     cd: lv => 3.2 - 0.25 * lv,
     cast(lv) {
       const t = nearestEnemies(9999, 1)[0];
-      if (!t) return false;
       const n = 1 + Math.floor(lv / 2);
-      const base = Math.atan2(t.y, t.x);
+      const base = t ? Math.atan2(t.y, t.x) : run.p.facing;
       for (let i = 0; i < n; i++) {
         const a = base + (i - (n - 1) / 2) * 0.22;
         run.projs.push({ kind: 'rocket', x: 0, y: 0, vx: Math.cos(a) * 520, vy: Math.sin(a) * 520, r: 13, life: 1.2,
@@ -521,7 +524,6 @@ const SKILLS = {
   quake: {
     cd: lv => 5.5 - 0.35 * lv,
     cast(lv) {
-      if (!nearestEnemies(150 + 15 * lv, 1).length) return false;
       const r = 130 + 18 * lv;
       run.fx.push({ kind: 'ring', x: 0, y: 0, r: 20, maxR: r, life: 0.45, max: 0.45, color: '#e0b07a', w: 14 });
       run.fx.push({ kind: 'ring', x: 0, y: 0, r: 10, maxR: r * 0.6, life: 0.3, max: 0.3, color: '#ffffff', w: 8 });
@@ -541,10 +543,10 @@ const SKILLS = {
     cd: lv => 4.6 - 0.25 * lv,
     cast(lv) {
       const alive = run.enemies.filter(e => !e.dead && e.x * e.x + e.y * e.y < ARENA * ARENA);
-      if (!alive.length) return false;
       const n = 2 + lv;
       for (let i = 0; i < n; i++) {
-        const t = alive[Math.floor(Math.random() * alive.length)];
+        const a = rand(0, Math.PI * 2), d = rand(60, ARENA * 0.8);
+        const t = alive.length ? alive[Math.floor(Math.random() * alive.length)] : { x: Math.cos(a) * d, y: Math.sin(a) * d };
         run.marks.push({ x: t.x + rand(-10, 10), y: t.y + rand(-10, 10), r: 55, t: 0.6 + i * 0.08, max: 0.6 + i * 0.08,
           dmg: pDmg() * (2.4 + 0.7 * lv) * run.p.skillDmg });
       }
@@ -573,8 +575,8 @@ const SKILLS = {
   fireZone: {
     cd: lv => 6.5 - 0.3 * lv,
     cast(lv) {
-      const c = densest(320);
-      if (!c) return false;
+      const a = rand(0, Math.PI * 2);
+      const c = densest(320) || { x: Math.cos(a) * 120, y: Math.sin(a) * 120 };
       run.zones.push({ kind: 'fire', x: c.x, y: c.y, r: 65 + 8 * lv, t: 3 + 0.4 * lv, max: 3 + 0.4 * lv, tick: 0,
         dmg: pDmg() * (0.5 + 0.2 * lv) * run.p.skillDmg });
     },
@@ -583,7 +585,6 @@ const SKILLS = {
     cd: lv => 7.5 - 0.4 * lv,
     cast(lv) {
       const r = 140 + 15 * lv;
-      if (!nearestEnemies(r, 1).length) return false;
       run.fx.push({ kind: 'ring', x: 0, y: 0, r: 20, maxR: r, life: 0.4, max: 0.4, color: '#9be7ff', w: 14 });
       run.fx.push({ kind: 'spikes', r, life: 0.9, max: 0.9 });
       run.shake = Math.max(run.shake, 6);
@@ -599,8 +600,8 @@ const SKILLS = {
   chain: {
     cd: lv => 2.6 - 0.15 * lv,
     cast(lv) {
-      const t = nearestEnemies(330, 1)[0];
-      if (!t) return false;
+      const t = nearestEnemies(9999, 1)[0];
+      if (!t) { const a = rand(0, Math.PI * 2); lightningFx(0, 0, Math.cos(a) * 200, Math.sin(a) * 200); SFX.zap(); return; }
       chainLightning(t, 2 + lv + (run.syn.arc ? 2 : 0), pDmg() * (1.2 + 0.35 * lv), false);
     },
   },
@@ -637,8 +638,9 @@ function updateSkills(dt) {
     if (def.cd) {
       s.t -= dt;
       if (s.t <= 0) {
-        if (def.cast(s.lv) === false) s.t = 0.3;
-        else { s.t = s.cd = def.cd(s.lv); notifySkill(id); }
+        def.cast(s.lv);
+        s.t = s.cd = def.cd(s.lv);
+        notifySkill(id);
       }
     }
   }
@@ -667,6 +669,7 @@ function updateEnemies(dt) {
     if (e.squash > 0) e.squash -= dt;
     if (e.stun > 0) { e.stun -= dt; continue; }
     const knocked = Math.hypot(e.vx, e.vy) > 60;
+    if (knocked && Math.random() < 0.35) run.fx.push({ kind: 'dot', x: e.x, y: e.y, z: 3, vz: rand(30, 90), vx: -e.vx * 0.1, vy: -e.vy * 0.1, size: 5, color: '#8a7a6a', life: 0.35, max: 0.35 });
     const d = Math.hypot(e.x, e.y);
     const nx = -e.x / (d || 1), ny = -e.y / (d || 1);
     e.face = Math.atan2(ny, nx);
@@ -918,10 +921,16 @@ function updateFx(dt) {
     b.vx *= f; b.vy *= f;
     b.x += b.vx * dt; b.y += b.vy * dt;
     if (b.z > 0) b.rot += b.vr * dt;
+    if (b.z > 8 && Math.random() < 0.6) run.fx.push({ kind: 'dot', x: b.x, y: b.y, z: b.z + b.r, vz: 0, vx: 0, vy: 0, size: 5, color: '#ffffff', life: 0.25, max: 0.25 });
+    if (b.z === 0 && b.vz === 0 && !b.landed) {
+      b.landed = true;
+      for (let i = 0; i < 6; i++) { const a = rand(0, Math.PI * 2); run.fx.push({ kind: 'dot', x: b.x, y: b.y, z: 3, vz: rand(40, 120), vx: Math.cos(a) * 80, vy: Math.sin(a) * 80, size: 6, color: '#8a7a6a', life: 0.4, max: 0.4 }); }
+    }
   }
   run.bodies = run.bodies.filter(b => b.life > 0);
   run.shake = Math.max(0, run.shake - dt * 45);
   run.zoom = Math.max(0, run.zoom - dt * 0.25);
+  run.comboPop = Math.max(0, run.comboPop - dt);
   for (const k in run.skillFlash) run.skillFlash[k] = Math.max(0, run.skillFlash[k] - dt);
   run.flash = Math.max(0, run.flash - dt);
   if (run.banner) { run.banner.t -= dt; if (run.banner.t <= 0) run.banner = null; }
@@ -931,6 +940,7 @@ function updateFx(dt) {
 function update(dt) {
   updateFx(dt);
   if (run.hitstop > 0) { run.hitstop -= dt; return; }
+  if (run.slowmo > 0) { run.slowmo -= dt; dt *= 0.3; }
   run.time += dt;
 
   if (!run.waveActive) {
@@ -957,6 +967,7 @@ function update(dt) {
   if (state !== 'play') return;
   updateProjectiles(dt);
   run.enemies = run.enemies.filter(e => !e.dead);
+  if (state === 'play' && run.ult >= run.ultMax && run.enemies.length >= 3) useUlt();
   if (state === 'play' && run.pendingLevels > 0) openLevelUp();
 }
 
@@ -1063,7 +1074,7 @@ function applyChoice(c) {
   if (c.kind === 'stat') {
     run.stats[c.id] = (run.stats[c.id] || 0) + 1;
     switch (c.id) {
-      case 'dmg': p.dmgMult += 0.2; break;
+      case 'dmg': p.dmgMult += 0.25; break;
       case 'rate': p.rate *= 0.88; break;
       case 'range': p.range += 18; break;
       case 'crit': p.crit += 0.06; break;
@@ -1155,7 +1166,7 @@ function showTitle() {
       <button class="btn" data-act="start">開始戰鬥</button>
       <button class="btn alt" data-act="shop">道場</button>
     </div>
-    <p class="small">自動出拳｜升級時選強化（1 2 3）｜連擊表滿了按 空白鍵 或「爆發」放必殺｜P 暫停　M 靜音</p>
+    <p class="small">全自動戰鬥：出拳、技能、爆發都會自己放｜升級時選強化（1 2 3）｜P 暫停　M 靜音</p>
   `);
 }
 
@@ -1320,8 +1331,9 @@ function drawHUD() {
     const col = ['#ffffff', '#ffe14a', '#ffb03a', '#ff7a3c', '#ff4fd8'][tier - 1];
     const next = COMBO_TIERS[tier] || null;
     const cx = SW / 2, cy = top + 70;
-    outlineText(`x${tier}`, cx - 8, cy, fs * 1.6, col, 'right');
-    outlineText(`${Math.floor(run.combo)} 連擊`, cx, cy, fs, col, 'left');
+    const pop = 1 + run.comboPop * 2.5;
+    outlineText(`x${tier}`, cx - 8, cy, fs * 1.6 * pop, col, 'right');
+    outlineText(`${Math.floor(run.combo)} 連擊`, cx, cy, fs * pop, col, 'left');
     if (next) bar(cx - 60, cy + 16, 120, 4, (run.combo - COMBO_TIERS[tier - 1]) / (next - COMBO_TIERS[tier - 1]), col);
     const idleRatio = clamp(1 - run.comboIdle / 2.2, 0, 1);
     bar(cx - 60, cy + 22, 120, 2, idleRatio, 'rgba(255,255,255,0.6)', 'rgba(0,0,0,0.3)');
@@ -1372,6 +1384,7 @@ function drawHUD() {
   // 必殺鍵狀態
   const ready = run.ult >= run.ultMax;
   ultBtn.style.setProperty('--fill', `${Math.round(run.ult / run.ultMax * 100)}%`);
+  ultBtn.textContent = ready ? '爆發！' : `爆發蓄力 ${Math.round(run.ult / run.ultMax * 100)}%`;
   ultBtn.classList.toggle('ready', ready);
 }
 

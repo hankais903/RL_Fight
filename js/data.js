@@ -8,7 +8,6 @@ const ENEMY_TYPES = {
   runner:  { name: '快腿仔', hp: 4,   speed: 112, dmg: 2,  r: 13, color: '#f0883e', xp: 1, gold: 1,  mass: 0.8 },
   tank:    { name: '肉盾',   hp: 24,  speed: 36,  dmg: 6, r: 24, color: '#8e5bd1', xp: 4, gold: 3,  mass: 3 },
   bomber:  { name: '炸彈客', hp: 5,   speed: 76,  dmg: 10, r: 15, color: '#44444f', xp: 2, gold: 2,  mass: 1, explode: true },
-  thrower: { name: '投擲手', hp: 8,   speed: 52,  dmg: 3,  r: 15, color: '#2fa36b', xp: 2, gold: 2,  mass: 1, ranged: { range: 230, cd: 2.6 } },
   charger: { name: '蠻牛',   hp: 18,  speed: 46,  dmg: 6, r: 18, color: '#b5652f', xp: 3, gold: 2,  mass: 2, charge: true },
   drummer: { name: '鼓手',   hp: 12,  speed: 42,  dmg: 2,  r: 16, color: '#3a7bd5', xp: 3, gold: 2,  mass: 1, buffer: true },
   spore:   { name: '毒菇頭', hp: 10,  speed: 48,  dmg: 2,  r: 16, color: '#8fbf3a', xp: 2, gold: 2,  mass: 1, poison: true },
@@ -22,7 +21,7 @@ const BOSS_ORDER = ['boss_slam', 'boss_charge', 'boss_summon'];
 
 // 數值強化（升級三選一時出現）
 const STAT_UPGRADES = [
-  { id: 'dmg',      icon: '👊', name: '重拳',     max: 10, rarity: 'common', desc: '出拳傷害 +20%' },
+  { id: 'dmg',      icon: '👊', name: '重拳',     max: 10, rarity: 'common', desc: '出拳傷害 +25%' },
   { id: 'rate',     icon: '⚡', name: '快拳',     max: 8,  rarity: 'common', desc: '出拳速度 +12%' },
   { id: 'range',    icon: '📏', name: '長臂',     max: 6,  rarity: 'common', desc: '出拳範圍 +18' },
   { id: 'crit',     icon: '🎯', name: '會心',     max: 8,  rarity: 'common', desc: '暴擊率 +6%' },

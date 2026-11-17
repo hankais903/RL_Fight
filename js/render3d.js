@@ -10,7 +10,7 @@ window.R3D = R3D;
 let renderer, scene, camera, dirLight;
 let ARENA = 300, PLAYER_R = 18;
 let SW = 1, SH = 1, camDist = 800;
-const TILT = 0.62;
+const TILT = 0.8;
 const VIS = 1.3;            // 角色外觀放大倍率（不影響碰撞）          // 鏡頭與垂直線的夾角（弧度）
 const FOV = 38;
 const camTarget = new THREE.Vector3(0, 0, 12);
@@ -69,6 +69,7 @@ R3D.init = (canvas, cfg) => {
   scene.add(spot);
 
   buildGeometries();
+  buildRigGeometries();
   buildArena();
   buildPlayer();
   buildFx();
@@ -83,8 +84,9 @@ R3D.resize = (w, h, dpr) => {
   const v = THREE.MathUtils.degToRad(FOV) / 2;
   const hHalf = Math.atan(Math.tan(v) * camera.aspect);
   const usableV = Math.max(0.45, (h - 200) / h);
-  const dW = (ARENA * 1.12) / Math.tan(hHalf);
-  const dH = (ARENA * 1.02) / (Math.tan(v) * usableV);
+  // 直式手機允許左右邊緣稍微出畫面，讓角色大一點
+  const dW = (ARENA * (camera.aspect < 0.8 ? 0.92 : 1.12)) / Math.tan(hHalf);
+  const dH = (ARENA * (0.45 + 0.6 * Math.cos(TILT))) / (Math.tan(v) * usableV);
   camDist = Math.max(dW, dH);
   scene.fog.near = camDist * 1.05;
   scene.fog.far = camDist * 2.4;
@@ -243,96 +245,210 @@ function updateCrowd(t, hype) {
   crowd.instanceMatrix.needsUpdate = true;
 }
 
-// ---------- 角色 ----------
+// ---------- 角色（人形骨架：身體、頭、手、腳） ----------
+// 骨架以「單位大小」建立，面向 +x，原點在腳底；實際大小用 scale 調整。
+const RIG_SCALE = 1.75;     // 碰撞半徑 → 外觀大小
 const WHITE = new THREE.Color(1, 1, 1);
-function shadeHex(hex, f) {
-  tmpColor.set(hex);
-  if (f > 1) tmpColor.lerp(WHITE, f - 1); else tmpColor.multiplyScalar(f);
-  return tmpColor.getHex();
+const ICE = new THREE.Color('#a8e4ff');
+const GRAY_LOOK = { skin: '#8a8f9a', shirt: '#7b808c', pants: '#6a6f7a', hair: '#5d626c', shoe: '#55595f' };
+
+// 各敵人外觀
+const LOOKS = {
+  grunt:   { skin: '#e0ac85', shirt: '#d9534f', pants: '#3b4a6b', hair: '#2b1d14' },
+  runner:  { skin: '#c98d62', shirt: '#f0883e', pants: '#2f2f3a', hair: '#111111', band: '#ffffff', slim: 0.85 },
+  tank:    { skin: '#d9a27a', shirt: '#8e5bd1', pants: '#3a2a50', hair: '#111111', wide: 1.4 },
+  bomber:  { skin: '#b07c5a', shirt: '#3a3a44', pants: '#22222a', hair: '#111111', bomb: true },
+  charger: { skin: '#a86c48', shirt: '#b5652f', pants: '#4a3020', hair: '#2b1d14', horns: true, wide: 1.15 },
+  drummer: { skin: '#e6b896', shirt: '#3a7bd5', pants: '#20304f', hair: '#4a2a14', drum: true },
+  spore:   { skin: '#d6c9a8', shirt: '#8fbf3a', pants: '#4a5a2a', hair: '#d6c9a8', mushroom: true },
+  goldie:  { skin: '#f0c090', shirt: '#f2c230', pants: '#7a5a10', hair: '#5a3a10', bag: true, slim: 0.9 },
+  boss_slam:   { skin: '#d79b74', shirt: '#c0392b', pants: '#2a1a1a', hair: '#111111', wide: 1.35, crown: true, spikes: true },
+  boss_charge: { skin: '#9a5f3e', shirt: '#a0522d', pants: '#3a2015', hair: '#111111', wide: 1.25, crown: true, horns: true },
+  boss_summon: { skin: '#e0b090', shirt: '#2d2d3a', pants: '#1a1a22', hair: '#111111', wide: 1.2, crown: true, shades: true, chain: true },
+};
+
+function capsuleGeo(r, h, seg = 12) {
+  const pts = [];
+  const N = 6;
+  for (let i = 0; i <= N; i++) { const a = -Math.PI / 2 + (i / N) * Math.PI / 2; pts.push(new THREE.Vector2(Math.max(0.001, Math.cos(a) * r), -h / 2 + Math.sin(a) * r)); }
+  for (let i = 0; i <= N; i++) { const a = (i / N) * Math.PI / 2; pts.push(new THREE.Vector2(Math.max(0.001, Math.cos(a) * r), h / 2 + Math.sin(a) * r)); }
+  return new THREE.LatheGeometry(pts, seg);
+}
+function buildRigGeometries() {
+  GEO.torso = capsuleGeo(0.46, 0.38, 14);
+  GEO.rhead = new THREE.SphereGeometry(0.42, 16, 12);
+  GEO.hair = new THREE.SphereGeometry(0.445, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.55);
+  GEO.eye = new THREE.SphereGeometry(0.065, 8, 6);
+  GEO.limb = capsuleGeo(0.15, 0.4, 8);
+  GEO.rfist = new THREE.SphereGeometry(0.23, 12, 10);
+  GEO.foot = new THREE.BoxGeometry(0.32, 0.13, 0.19);
+  GEO.shorts = new THREE.CylinderGeometry(0.43, 0.46, 0.34, 14);
+  GEO.cap = new THREE.SphereGeometry(0.62, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.5);
+  GEO.band = new THREE.TorusGeometry(0.43, 0.05, 6, 20);
 }
 
-function createFigure(color, headColor) {
-  const g = new THREE.Group();
-  const mBody = lambert(color), mHead = lambert(headColor || shadeHex(color, 1.2)), mFist = lambert(shadeHex(color, 0.7));
-  const body = new THREE.Mesh(GEO.body, mBody);
-  const head = new THREE.Mesh(GEO.head, mHead);
-  head.position.y = 1.65;
-  const fistL = new THREE.Mesh(GEO.fist, mFist), fistR = new THREE.Mesh(GEO.fist, mFist);
-  fistL.position.set(0.7, 0.95, -0.72); fistR.position.set(0.7, 0.95, 0.72);
-  for (const m of [body, head, fistL, fistR]) { m.castShadow = true; g.add(m); }
-  g.userData = { body, head, fistL, fistR, mats: [mBody, mHead, mFist], color: new THREE.Color(color), headColor: mHead.color.clone(), fistColor: mFist.color.clone() };
-  scene.add(g);
-  return g;
-}
+const GUARD = 1.25; // 手臂舉起的防禦姿勢角度
 
-function setFigureLook(g, o) {
-  const u = g.userData;
-  const [mb, mh, mf] = u.mats;
-  if (o.frozen) {
-    mb.color.set('#a8e4ff'); mh.color.set('#c8f0ff'); mf.color.set('#8fd0f0');
-  } else {
-    mb.color.copy(u.color); mh.color.copy(u.headColor); mf.color.copy(u.fistColor);
+function createRig(look, opt = {}) {
+  const root = new THREE.Group();
+  const body = new THREE.Group();
+  body.position.y = 0.85;
+  root.add(body);
+  const mats = [];
+  const M = c => { const m = lambert(c); m.userData.base = new THREE.Color(c); mats.push(m); return m; };
+  const mShirt = M(look.shirt), mSkin = M(look.skin), mPants = M(look.pants), mHair = M(look.hair), mShoe = M(look.shoe || '#26262c');
+  const mGlove = opt.gloveMat || M(look.glove || look.skin);
+  const wide = look.wide || 1, slim = look.slim || 1;
+  const shadow = m => { m.castShadow = true; return m; };
+
+  const torso = shadow(new THREE.Mesh(GEO.torso, mShirt));
+  torso.position.y = 0.5;
+  torso.scale.set(0.95 * wide * slim, 1, wide * slim);
+  body.add(torso);
+  const shorts = new THREE.Mesh(GEO.shorts, mPants);
+  shorts.position.y = 0.06;
+  shorts.scale.set(wide * slim, 1, wide * slim);
+  body.add(shorts);
+
+  const head = new THREE.Group();
+  head.position.y = 1.33;
+  body.add(head);
+  const skull = shadow(new THREE.Mesh(GEO.rhead, mSkin));
+  head.add(skull);
+  const hair = new THREE.Mesh(GEO.hair, mHair);
+  hair.rotation.z = 0.35;
+  head.add(hair);
+  const eyeMat = new THREE.MeshBasicMaterial({ color: '#111' });
+  for (const s of [-1, 1]) {
+    const eye = new THREE.Mesh(GEO.eye, eyeMat);
+    eye.position.set(0.37, 0.04, s * 0.15);
+    head.add(eye);
   }
-  const em = o.flash ? 0xffffff : (o.burn ? 0xff5a10 : 0x000000);
-  const ei = o.flash ? 0.9 : (o.burn ? 0.35 + Math.random() * 0.25 : 0);
-  for (const m of u.mats) { m.emissive.setHex(em); m.emissiveIntensity = ei; }
-  if (o.opacity !== undefined) {
-    for (const m of u.mats) { m.transparent = o.opacity < 1; m.opacity = o.opacity; }
+  // 生氣的眉毛
+  const browMat = new THREE.MeshBasicMaterial({ color: '#1a1a1a' });
+  for (const s of [-1, 1]) {
+    const brow = new THREE.Mesh(GEO.box, browMat);
+    brow.scale.set(0.04, 0.04, 0.16);
+    brow.position.set(0.39, 0.15, s * 0.15);
+    brow.rotation.x = s * 0.45;
+    head.add(brow);
   }
-}
 
-function addExtras(g, type, T) {
-  const ex = new THREE.Group();
-  if (type === 'bomber') {
-    const fuse = new THREE.Mesh(GEO.unitSphere, new THREE.MeshBasicMaterial({ color: '#ffb020' }));
-    fuse.scale.setScalar(0.22); fuse.position.set(-0.3, 2.3, 0);
-    ex.add(fuse); g.userData.fuse = fuse;
-    const bomb = new THREE.Mesh(GEO.unitSphere, lambert('#22222a'));
-    bomb.scale.setScalar(0.5); bomb.position.set(-0.75, 0.9, 0);
-    ex.add(bomb);
-  } else if (type === 'spore') {
-    for (const [x, z] of [[0.2, -0.25], [-0.15, 0.25], [0.32, 0.22], [-0.25, -0.15]]) {
-      const d = new THREE.Mesh(GEO.unitSphere, lambert('#eef7cc'));
-      d.scale.setScalar(0.13); d.position.set(x, 2.15, z);
-      ex.add(d);
+  const arms = [], fists = [];
+  for (const s of [-1, 1]) {
+    const sh = new THREE.Group();
+    sh.position.set(0, 0.86, s * 0.5 * wide * slim);
+    sh.rotation.z = GUARD;
+    sh.rotation.x = -s * 0.25;
+    body.add(sh);
+    const limb = new THREE.Mesh(GEO.limb, mSkin);
+    limb.position.y = -0.3;
+    sh.add(limb);
+    const fist = shadow(new THREE.Mesh(GEO.rfist, mGlove));
+    fist.position.y = -0.62;
+    if (opt.bigFists) fist.scale.setScalar(1.35);
+    sh.add(fist);
+    arms.push(sh); fists.push(fist);
+  }
+  const legs = [];
+  for (const s of [-1, 1]) {
+    const hip = new THREE.Group();
+    hip.position.set(0, 0, s * 0.2 * wide * slim);
+    body.add(hip);
+    const leg = new THREE.Mesh(GEO.limb, mPants);
+    leg.position.y = -0.4;
+    leg.scale.set(1.15, 1, 1.15);
+    hip.add(leg);
+    const foot = new THREE.Mesh(GEO.foot, mShoe);
+    foot.position.set(0.07, -0.8, 0);
+    hip.add(foot);
+    legs.push(hip);
+  }
+
+  // 配件
+  const acc = (geo, mat, x, y, z, sx, sy, sz, parent = body) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z); m.scale.set(sx, sy, sz);
+    parent.add(m);
+    return m;
+  };
+  if (look.band) { const b = new THREE.Mesh(GEO.band, M(look.band)); b.rotation.x = Math.PI / 2; b.position.y = 0.1; head.add(b); }
+  if (look.bomb) {
+    acc(GEO.unitSphere, M('#1e1e24'), -0.55, 0.65, 0, 0.36, 0.36, 0.36);
+    root.userData.fuse = acc(GEO.unitSphere, new THREE.MeshBasicMaterial({ color: '#ffb020' }), -0.6, 1.08, 0, 0.09, 0.09, 0.09);
+  }
+  if (look.horns) for (const s of [-1, 1]) {
+    const h = acc(GEO.cone, M('#efe6d0'), 0.05, 0.3, s * 0.3, 0.07, 0.32, 0.07, head);
+    h.rotation.x = s * 0.6;
+  }
+  if (look.drum) { const d = acc(GEO.cyl, M('#e8eef8'), 0.5, 0.45, 0, 0.32, 0.28, 0.32); d.rotation.z = Math.PI / 2; }
+  if (look.mushroom) {
+    hair.visible = false;
+    const cap = acc(GEO.cap, M('#d63a3a'), 0, 0.12, 0, 1, 0.85, 1, head);
+    cap.castShadow = true;
+    for (const [a, r] of [[0, 0.35], [1.6, 0.4], [3.1, 0.3], [4.5, 0.42], [2.3, 0.15]]) {
+      acc(GEO.unitSphere, M('#f5f0e0'), Math.cos(a) * r, 0.12 + 0.5 * Math.sqrt(1 - (r / 0.62) ** 2) * 0.85, Math.sin(a) * r, 0.08, 0.05, 0.08, head);
     }
-  } else if (type === 'drummer') {
-    const drum = new THREE.Mesh(GEO.cyl, lambert('#d8e4f5'));
-    drum.scale.set(0.45, 0.4, 0.45); drum.position.set(0.85, 0.75, 0);
-    ex.add(drum);
-  } else if (type === 'thrower') {
-    const bottle = new THREE.Mesh(GEO.cyl, lambert('#6b4a2b'));
-    bottle.scale.set(0.15, 0.6, 0.15); bottle.position.set(0.7, 1.3, 0.72);
-    ex.add(bottle);
-  } else if (type === 'goldie') {
-    const bag = new THREE.Mesh(GEO.unitSphere, lambert('#c9952a'));
-    bag.scale.set(0.55, 0.5, 0.55); bag.position.set(-0.75, 1.1, 0);
-    ex.add(bag);
-  } else if (type === 'runner') {
-    const band = new THREE.Mesh(GEO.torus, lambert('#ffffff'));
-    band.rotation.x = Math.PI / 2; band.position.y = 1.75;
-    ex.add(band);
-  } else if (type === 'tank' || type === 'charger') {
-    const horns = type === 'charger';
-    if (horns) for (const s of [-1, 1]) {
-      const h = new THREE.Mesh(GEO.cone, lambert('#efe6d0'));
-      h.scale.set(0.12, 0.45, 0.12); h.position.set(0.25, 2.1, s * 0.35); h.rotation.x = s * 0.5;
-      ex.add(h);
-    }
   }
-  if (T.boss) {
-    const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.36, 0.3, 5, 1, true), lambert('#ffd84a', { side: THREE.DoubleSide, emissive: 0x553300 }));
-    crown.position.y = 2.25;
-    ex.add(crown);
+  if (look.bag) acc(GEO.unitSphere, M('#c9952a'), -0.55, 0.6, 0, 0.34, 0.32, 0.34);
+  if (look.crown) {
+    const mc = lambert('#ffd84a', { emissive: 0x553300 });
+    const ring = acc(new THREE.CylinderGeometry(0.28, 0.25, 0.16, 6, 1, true), mc, 0, 0.42, 0, 1, 1, 1, head);
+    ring.material.side = THREE.DoubleSide;
     for (let i = 0; i < 5; i++) {
-      const sp = new THREE.Mesh(GEO.cone, lambert('#ffd84a', { emissive: 0x553300 }));
       const a = i * Math.PI * 2 / 5;
-      sp.scale.set(0.09, 0.25, 0.09); sp.position.set(Math.cos(a) * 0.4, 2.5, Math.sin(a) * 0.4);
-      ex.add(sp);
+      acc(GEO.cone, mc, Math.cos(a) * 0.25, 0.58, Math.sin(a) * 0.25, 0.06, 0.16, 0.06, head);
     }
   }
-  ex.traverse(m => { if (m.isMesh) m.castShadow = true; });
-  g.add(ex);
+  if (look.spikes) for (const s of [-1, 1]) {
+    acc(GEO.unitSphere, M('#444'), 0, 0.95, s * 0.52 * wide, 0.22, 0.16, 0.22);
+    for (let i = 0; i < 3; i++) acc(GEO.cone, M('#ddd'), (i - 1) * 0.12, 1.1, s * 0.55 * wide, 0.05, 0.16, 0.05);
+  }
+  if (look.shades) {
+    const ms = new THREE.MeshBasicMaterial({ color: '#050505' });
+    acc(GEO.box, ms, 0.33, 0.05, 0, 0.06, 0.1, 0.4, head);
+  }
+  if (look.chain) {
+    const c = new THREE.Mesh(GEO.band, lambert('#ffd84a', { emissive: 0x443300 }));
+    c.rotation.x = Math.PI / 2; c.rotation.y = 0.5; c.position.set(0.15, 0.8, 0); c.scale.setScalar(1.05);
+    body.add(c);
+  }
+
+  root.userData = { body, head, arms, fists, legs, mats, torso };
+  scene.add(root);
+  return root;
+}
+
+// 顏色與受擊閃光
+function setRigLook(g, o) {
+  const mats = g.userData.mats;
+  for (const m of mats) {
+    if (o.frozen) m.color.copy(m.userData.base).lerp(ICE, 0.7);
+    else m.color.copy(m.userData.base);
+    if (o.flash) { m.emissive.setHex(0xffffff); m.emissiveIntensity = 1; }
+    else if (o.burn) { m.emissive.setHex(0xff5a10); m.emissiveIntensity = 0.35 + Math.random() * 0.25; }
+    else if (m.emissiveIntensity) { m.emissive.setHex(0); m.emissiveIntensity = 0; }
+    if (o.opacity !== undefined) { m.transparent = o.opacity < 1; m.opacity = o.opacity; }
+  }
+}
+
+// 走路、攻擊、受擊姿勢
+function poseRig(g, o) {
+  const u = g.userData;
+  const ph = o.walk || 0;
+  const sw = Math.sin(ph);
+  const amp = o.moving ? 1 : 0.15;
+  u.legs[0].rotation.z = sw * 0.75 * amp;
+  u.legs[1].rotation.z = -sw * 0.75 * amp;
+  u.body.position.y = 0.85 + Math.abs(Math.cos(ph)) * 0.06 * amp - (o.crouch ? 0.15 : 0);
+  // 身體前傾 / 受擊後仰
+  u.body.rotation.z = (o.hit || 0) * 0.6 - (o.lean || 0);
+  u.head.rotation.z = (o.hit || 0) * 0.5;
+  const guardL = GUARD + sw * 0.18 * amp, guardR = GUARD - sw * 0.18 * amp;
+  u.arms[0].rotation.z = o.punchL ? 1.6 : guardL;
+  u.arms[1].rotation.z = o.punchR ? 1.65 : guardR;
+  u.arms[1].position.x = o.punchR ? 0.12 : 0;
+  if (o.hit) { u.arms[0].rotation.z = 2.4; u.arms[1].rotation.z = 2.5; }
 }
 
 // 敵人網格池
@@ -344,8 +460,7 @@ function getEnemyMesh(e) {
   const pool = enemyPool[e.type] || (enemyPool[e.type] = []);
   g = pool.pop();
   if (!g) {
-    g = createFigure(e.T.color);
-    addExtras(g, e.type, e.T);
+    g = createRig(LOOKS[e.type] || LOOKS.grunt);
     g.userData.type = e.type;
   }
   g.visible = true;
@@ -354,28 +469,32 @@ function getEnemyMesh(e) {
 }
 function releaseEnemy(e, g) {
   g.visible = false;
-  if (g.userData.shieldMesh) g.userData.shieldMesh.visible = false;
-  if (g.userData.warn) g.userData.warn.visible = false;
-  if (g.userData.slowRing) g.userData.slowRing.visible = false;
+  const u = g.userData;
+  if (u.shieldMesh) u.shieldMesh.visible = false;
+  if (u.warn) { u.warn.visible = false; u.warnStrip.visible = false; }
+  if (u.slowRing) u.slowRing.visible = false;
   enemyMap.delete(e);
-  enemyPool[g.userData.type].push(g);
+  enemyPool[u.type].push(g);
 }
 
 function updateEnemy(e, g, t) {
   const r = e.r;
   const frozen = e.freezeT > 0;
-  const step = frozen ? 0 : Math.sin(e.anim * 10);
-  g.position.set(e.x, Math.abs(step) * r * 0.12, e.y);
+  const S = r * RIG_SCALE;
+  g.position.set(e.x, 0, e.y);
   g.rotation.y = -e.face;
-  g.scale.setScalar(r * VIS);
-  if (e.squash > 0) { const q = e.squash / 0.12; g.scale.set(r * VIS * (1 + 0.3 * q), r * VIS * (1 - 0.35 * q), r * VIS * (1 + 0.3 * q)); }
+  g.scale.setScalar(S);
   const u = g.userData;
-  const lunge = e.lunge > 0 ? 0.6 : 0;
-  u.fistL.position.x = 0.7 + step * 0.25 + lunge;
-  u.fistR.position.x = 0.7 - step * 0.25;
+  const hitK = e.squash > 0 ? e.squash / 0.12 : (e.stun > 0 ? 0.5 : 0);
+  const moving = !frozen && !(e.stun > 0) && Math.hypot(e.vx, e.vy) < 60;
   const wind = e.state === 'wind';
-  if (wind) { u.body.scale.set(1.1, 0.85, 1.1); } else u.body.scale.set(1, 1, 1);
-  setFigureLook(g, { frozen, burn: !!e.burn, flash: e.flash > 0 || (wind && Math.floor(t * 16) % 2 === 0) });
+  if (!frozen) u.walk = (u.walk || 0) + 0.18 * (e.T.speed / 60) * (e.state === 'dash' ? 3 : 1);
+  poseRig(g, {
+    walk: u.walk, moving, hit: hitK,
+    punchR: e.lunge > 0, lean: e.state === 'dash' ? 0.5 : (wind ? 0.35 : 0), crouch: wind,
+  });
+  if (e.squash > 0) { const q = e.squash / 0.12; g.scale.set(S * (1 + 0.15 * q), S * (1 - 0.2 * q), S * (1 + 0.15 * q)); }
+  setRigLook(g, { frozen, burn: !!e.burn, flash: e.flash > 0 || (wind && Math.floor(t * 16) % 2 === 0) });
   if (u.fuse) u.fuse.material.color.set(Math.floor(t * 12) % 2 ? '#ffe14a' : '#ff5a1f');
 
   // 護盾
@@ -385,8 +504,8 @@ function updateEnemy(e, g, t) {
       scene.add(u.shieldMesh);
     }
     u.shieldMesh.visible = true;
-    u.shieldMesh.position.set(e.x, r * 1.1, e.y);
-    u.shieldMesh.scale.setScalar(r * 1.45);
+    u.shieldMesh.position.set(e.x, S * 1.2, e.y);
+    u.shieldMesh.scale.setScalar(S * 1.25);
   } else if (u.shieldMesh) u.shieldMesh.visible = false;
 
   // 減速圈
@@ -398,7 +517,7 @@ function updateEnemy(e, g, t) {
     }
     u.slowRing.visible = true;
     u.slowRing.position.set(e.x, 1.5, e.y);
-    u.slowRing.scale.setScalar(r * 1.25);
+    u.slowRing.scale.setScalar(r * 1.3);
   } else if (u.slowRing) u.slowRing.visible = false;
 
   // 頭目與蠻牛的預警
@@ -425,7 +544,7 @@ function updateEnemy(e, g, t) {
   } else if (u.warn) { u.warn.visible = false; u.warnStrip.visible = false; }
 }
 
-// 被揍飛的身體
+// 被揍飛的身體：手腳攤開、空中翻滾、倒地
 const bodyMap = new Map();
 const bodyPool = [];
 function updateBodies(bodies) {
@@ -434,17 +553,32 @@ function updateBodies(bodies) {
   for (const b of bodies) {
     let g = bodyMap.get(b);
     if (!g) {
-      g = bodyPool.pop() || createFigure('#7b808c', '#959aa6');
+      g = bodyPool.pop() || createRig(GRAY_LOOK);
       g.visible = true;
       bodyMap.set(b, g);
       g.userData.dir = Math.atan2(b.vy, b.vx);
+      g.userData.flail = Math.random() * 10;
     }
-    g.scale.setScalar(b.r * VIS);
+    const S = b.r * RIG_SCALE;
+    g.scale.setScalar(S);
+    const u = g.userData;
     const airborne = b.z > 0.5;
-    g.position.set(b.x, b.z + (airborne ? b.r * 0.6 : b.r * 0.35), b.y);
-    if (airborne) g.rotation.set(b.rot, -g.userData.dir, b.rot * 0.7);
-    else g.rotation.set(0, -g.userData.dir, Math.PI / 2); // 倒在地上
-    setFigureLook(g, { opacity: Math.min(1, b.life / 0.6) });
+    u.flail += 0.3;
+    // 手腳攤開亂揮
+    u.arms[0].rotation.z = 2.6 + Math.sin(u.flail) * 0.5;
+    u.arms[1].rotation.z = 2.4 + Math.cos(u.flail * 1.3) * 0.5;
+    u.legs[0].rotation.x = 0.5; u.legs[1].rotation.x = -0.5;
+    u.legs[0].rotation.z = airborne ? Math.sin(u.flail) * 0.6 : 0.2;
+    u.legs[1].rotation.z = airborne ? -Math.sin(u.flail) * 0.6 : -0.2;
+    u.body.rotation.z = 0; u.head.rotation.z = 0.3;
+    if (airborne) {
+      g.position.set(b.x, b.z, b.y);
+      g.rotation.set(b.rot * 0.6, -u.dir, -b.rot); // 往後翻
+    } else {
+      g.position.set(b.x, S * 0.25, b.y);
+      g.rotation.set(0, -u.dir, Math.PI / 2); // 仰躺在地上
+    }
+    setRigLook(g, { opacity: Math.min(1, b.life / 0.6) });
   }
 }
 
@@ -452,63 +586,60 @@ function updateBodies(bodies) {
 let player = null;
 const armPool = [];
 function buildPlayer() {
-  player = createFigure('#ffc83d', '#3a2618');
-  player.remove(player.userData.fistL); player.remove(player.userData.fistR);
-  const band = new THREE.Mesh(GEO.torus, lambert('#e8453c'));
-  band.rotation.x = Math.PI / 2; band.position.y = 1.72;
-  player.add(band);
-  const tail = new THREE.Mesh(GEO.box, lambert('#e8453c'));
-  tail.scale.set(0.7, 0.08, 0.16); tail.position.set(-0.75, 1.72, 0.1);
-  player.add(tail);
-  player.userData.tail = tail;
-  // 臉（朝前的膚色）
-  const face = new THREE.Mesh(GEO.unitSphere, lambert('#f4c38f'));
-  face.scale.set(0.3, 0.38, 0.42); face.position.set(0.32, 1.62, 0);
-  player.add(face);
-  player.scale.setScalar(PLAYER_R * VIS);
-  // 待命的拳套
-  const gloveMat = lambert('#ff4d4d');
-  player.userData.idleGloves = [-1, 1].map(() => {
-    const m = new THREE.Mesh(GEO.unitSphere, gloveMat);
-    m.castShadow = true;
-    scene.add(m);
-    return m;
-  });
-  player.userData.gloveMat = gloveMat;
-  player.userData.skinMat = lambert('#f4c38f');
-  // 護盾
-  player.userData.shield = new THREE.Mesh(GEO.unitSphere, basic('#7cc8ff', { opacity: 0.22 }));
-  scene.add(player.userData.shield);
+  const gloveMat = lambert('#ff3b3b');
+  gloveMat.userData.base = new THREE.Color('#ff3b3b');
+  player = createRig({ skin: '#f1bd8a', shirt: '#f1bd8a', pants: '#e8453c', hair: '#2a1a10', shoe: '#ffffff' }, { gloveMat, bigFists: true });
+  const u = player.userData;
+  u.gloveMat = gloveMat;
+  u.skinMat = lambert('#f1bd8a');
+  // 頭帶與飄帶
+  const bandMat = lambert('#e8453c');
+  const band = new THREE.Mesh(GEO.band, bandMat);
+  band.rotation.x = Math.PI / 2; band.position.y = 0.1;
+  u.head.add(band);
+  const tail = new THREE.Mesh(GEO.box, bandMat);
+  tail.scale.set(0.45, 0.05, 0.1); tail.position.set(-0.55, 0.1, 0.05);
+  u.head.add(tail);
+  u.tail = tail;
+  // 短褲白邊
+  const stripe = new THREE.Mesh(new THREE.CylinderGeometry(0.465, 0.47, 0.06, 14), lambert('#ffffff'));
+  stripe.position.y = 0.2;
+  u.body.add(stripe);
+  player.scale.setScalar(PLAYER_R * RIG_SCALE);
+  u.shield = new THREE.Mesh(GEO.unitSphere, basic('#7cc8ff', { opacity: 0.22 }));
+  scene.add(u.shield);
 }
 
 function getArm(i) {
   if (!armPool[i]) {
     const arm = new THREE.Mesh(GEO.arm, player.userData.skinMat);
     const glove = new THREE.Mesh(GEO.unitSphere, player.userData.gloveMat);
+    const streak = new THREE.Mesh(GEO.box, new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
     arm.castShadow = glove.castShadow = true;
-    scene.add(arm); scene.add(glove);
-    armPool[i] = { arm, glove };
+    scene.add(arm); scene.add(glove); scene.add(streak);
+    armPool[i] = { arm, glove, streak };
   }
   return armPool[i];
 }
 
 function updatePlayer(p, t, hurt, elements) {
-  const R = PLAYER_R * VIS;
-  player.position.set(0, 0, 0);
+  const S = PLAYER_R * RIG_SCALE;
+  const u = player.userData;
   player.rotation.y = -p.facing;
-  setFigureLook(player, { flash: false });
-  if (hurt) for (const m of player.userData.mats) { m.emissive.setHex(0xff2020); m.emissiveIntensity = 0.6; }
-  player.userData.tail.rotation.y = Math.sin(t * 9) * 0.4;
-  const shoulderY = R * 1.0;
-  const busy = { '-1': false, '1': false };
-  let ai = 0, lean = 0;
+  setRigLook(player, { flash: false });
+  if (hurt) for (const m of u.mats) { m.emissive.setHex(0xff2020); m.emissiveIntensity = 0.6; }
+  u.tail.rotation.y = Math.sin(t * 9) * 0.4;
   // 元素拳套顏色
-  const gm = player.userData.gloveMat;
+  const gm = u.gloveMat;
   const sk = elements || {};
   if (sk.firePunch) { gm.color.set('#ff7a2a'); gm.emissive.set('#ff4400'); gm.emissiveIntensity = 0.5 + Math.random() * 0.3; }
   else if (sk.thunderPunch) { gm.color.set('#ffe14a'); gm.emissive.set('#ffd000'); gm.emissiveIntensity = Math.random() < 0.3 ? 0.9 : 0.3; }
   else if (sk.icePunch) { gm.color.set('#9be7ff'); gm.emissive.set('#3fb8ff'); gm.emissiveIntensity = 0.35; }
-  else { gm.color.set('#ff4d4d'); gm.emissive.set('#000000'); gm.emissiveIntensity = 0; }
+  else { gm.color.set('#ff3b3b'); gm.emissive.set('#000000'); gm.emissiveIntensity = 0; }
+
+  const shoulderY = (0.85 + 0.86) * S;
+  const busy = { '-1': false, '1': false };
+  let ai = 0, lean = 0;
   for (const pu of p.punches) {
     const k = pu.t / pu.dur;
     // 快速打出 → 停住 → 收回
@@ -520,38 +651,38 @@ function updatePlayer(p, t, hurt, elements) {
     lean = Math.max(lean, ext);
     busy[pu.side] = true;
     const sa = p.facing + pu.side * Math.PI / 2;
-    const sx = Math.cos(sa) * R * 0.7, sz = Math.sin(sa) * R * 0.7;
-    const tgtY = pu.target && pu.target.r ? pu.target.r * VIS * 1.1 : R;
+    const sx = Math.cos(sa) * S * 0.5, sz = Math.sin(sa) * S * 0.5;
+    const tgtY = pu.target && pu.target.r ? pu.target.r * RIG_SCALE * 1.7 : shoulderY;
     const gx = sx + (pu.tx - sx) * ext, gz = sz + (pu.ty - sz) * ext;
     const gy = shoulderY + (tgtY - shoulderY) * ext;
-    const { arm, glove } = getArm(ai++);
+    const { arm, glove, streak } = getArm(ai++);
     arm.visible = glove.visible = true;
-    const from = tmpV.set(sx, shoulderY, sz);
     const dir = new THREE.Vector3(gx - sx, gy - shoulderY, gz - sz);
     const len = dir.length();
     arm.position.set((sx + gx) / 2, (shoulderY + gy) / 2, (sz + gz) / 2);
-    arm.quaternion.setFromUnitVectors(UP, dir.normalize());
-    arm.scale.set(R * 0.2, Math.max(1, len), R * 0.2);
+    arm.quaternion.setFromUnitVectors(UP, dir.clone().normalize());
+    arm.scale.set(S * 0.14, Math.max(1, len), S * 0.14);
     glove.position.set(gx, gy, gz);
-    glove.scale.setScalar(R * (impact ? 0.72 : 0.52));
+    glove.scale.setScalar(S * (impact ? 0.48 : 0.34));
+    // 出拳殘影
+    const sOp = k < 0.45 ? (1 - k / 0.45) * 0.55 : 0;
+    streak.visible = sOp > 0.02 && len > 20;
+    if (streak.visible) {
+      streak.position.copy(arm.position);
+      streak.rotation.set(0, -Math.atan2(gz - sz, gx - sx), 0);
+      streak.scale.set(len, S * 0.12, S * 0.5);
+      streak.material.opacity = sOp;
+    }
   }
-  for (let i = ai; i < armPool.length; i++) { armPool[i].arm.visible = false; armPool[i].glove.visible = false; }
-  // 出拳時身體往前送
-  player.position.set(Math.cos(p.facing) * lean * 5, 0, Math.sin(p.facing) * lean * 5);
-  player.rotation.z = 0;
-  player.rotation.x = 0;
-  const sides = [-1, 1];
-  player.userData.idleGloves.forEach((m, i) => {
-    const side = sides[i];
-    m.visible = !busy[side];
-    const a = p.facing + side * 0.8;
-    m.position.set(Math.cos(a) * R * 1.05, R * 1.05 + Math.sin(t * 6 + i) * 1.5, Math.sin(a) * R * 1.05);
-    m.scale.setScalar(R * 0.46);
-  });
-  const sh = player.userData.shield;
-  sh.visible = !!p.shield;
-  sh.position.set(0, R * 1.1, 0);
-  sh.scale.setScalar(R * 1.9);
+  for (let i = ai; i < armPool.length; i++) { armPool[i].arm.visible = false; armPool[i].glove.visible = false; armPool[i].streak.visible = false; }
+  // 出拳中的那隻手藏起來（由伸長的手臂取代）
+  u.arms[0].visible = !busy['-1'];
+  u.arms[1].visible = !busy['1'];
+  poseRig(player, { walk: t * 6, moving: false, lean: lean * 0.25 });
+  player.position.set(Math.cos(p.facing) * lean * 6, 0, Math.sin(p.facing) * lean * 6);
+  u.shield.visible = !!p.shield;
+  u.shield.position.set(0, S * 1.2, 0);
+  u.shield.scale.setScalar(S * 1.5);
 }
 
 // ---------- 特效、投射物、掉落物 ----------
@@ -617,6 +748,20 @@ function getStarTex() {
 }
 const mkImpact = () => {
   const m = new THREE.Sprite(new THREE.SpriteMaterial({ map: getStarTex(), transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending }));
+  scene.add(m);
+  return m;
+};
+let shockTex = null;
+const mkShock = () => {
+  if (!shockTex) {
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const g = c.getContext('2d');
+    g.strokeStyle = '#ffffff'; g.lineWidth = 10;
+    g.beginPath(); g.arc(64, 64, 54, 0, Math.PI * 2); g.stroke();
+    shockTex = new THREE.CanvasTexture(c);
+  }
+  const m = new THREE.Sprite(new THREE.SpriteMaterial({ map: shockTex, transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending }));
   scene.add(m);
   return m;
 };
@@ -690,6 +835,11 @@ function syncFx(run, t) {
       m.material.color.set(f.color);
       m.material.opacity = a;
       m.material.rotation = f.x * 0.1;
+      const sh = take('shock', mkShock);
+      sh.position.copy(m.position);
+      sh.scale.setScalar((20 + k * 90) * f.size);
+      sh.material.color.set(f.color);
+      sh.material.opacity = a * 0.9;
     } else if (f.kind === 'spikes') {
       // 冰霜爆發：地上冒出一圈冰刺
       const k = 1 - a;
