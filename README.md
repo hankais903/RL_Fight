@@ -34,6 +34,8 @@ js/data.js            敵人、強化、技能、元素組合、道場資料（�
 js/game.js            遊戲邏輯、2D 介面、輸入、音效
 js/render3d.js        3D 畫面（Three.js）：擂台、角色骨架與動畫、特效
 js/mocap.js           動作捕捉動畫資料（由 tools/mocap/extract.py 產生）
+js/models.js          內嵌的角色模型（由 tools/embed_models.py 從 assets/models/*.glb 產生）
+assets/models/hero.glb 主角 3D 模型（Mixamo 骨架）
 tools/mocap/          動作捕捉轉換工具
 vendor/three.min.js   Three.js r128（MIT 授權），讓本機離線也能玩
 vendor/three-postfx.js Three.js r128 發光後處理（MIT 授權）
@@ -73,3 +75,15 @@ python3 tools/mocap/extract.py <放 BVH 檔的資料夾>
 出拳會依拳頭軌跡自動分類成直拳（往前、手臂打直）、勾拳（橫向弧線、手肘彎曲）、上勾拳（由下往上）；飛踢從多段跳躍踢中挑出雙腳離地時腳最高的瞬間。
 
 主角的待機架式（`stance`）以 13_17 的一格拳擊架式為基礎，由工具合成：髖部上下彈動、雙腳以 IK 固定不滑動、上半身慢半拍跟動，首尾相接可無縫循環。
+
+## 角色模型
+
+主角使用 `assets/models/hero.glb`（Mixamo 命名骨架、已綁定）。遊戲執行時，動作捕捉骨架在背後播放動畫（不顯示），每一格把姿勢重定向到模型的骨架上：逐根對齊骨頭方向，髖、胸、頭再對齊朝向，手指彎成握拳。
+
+更換或新增模型後執行：
+
+```bash
+python3 tools/embed_models.py
+```
+
+模型需求：`.glb`、人形骨架（建議 Mixamo 命名）、T-pose 或 A-pose、主角 2 萬面以內。

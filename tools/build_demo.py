@@ -7,7 +7,10 @@ data = (root / 'js/data.js').read_text(encoding='utf-8')
 game = (root / 'js/game.js').read_text(encoding='utf-8')
 r3d = (root / 'js/render3d.js').read_text(encoding='utf-8')
 mocap = (root / 'js/mocap.js').read_text(encoding='utf-8')
-postfx = (root / 'vendor/three-postfx.js').read_text(encoding='utf-8')
+postfx = (root / 'vendor/three-postfx.js').read_text(encoding='utf-8') + '\n' + (root / 'vendor/GLTFLoader.js').read_text(encoding='utf-8')
+import subprocess
+subprocess.run(['python3', str(root / 'tools/embed_models.py')], check=True)
+models = (root / 'js/models.js').read_text(encoding='utf-8')
 html = f"""<title>RL Fight</title>
 <style>
 :root {{ color-scheme: dark; }}
@@ -29,6 +32,9 @@ html = f"""<title>RL Fight</title>
 </script>
 <script>
 {mocap}
+</script>
+<script>
+{models}
 </script>
 <script>
 {r3d}
