@@ -245,10 +245,16 @@ function updateCrowd(t, hype) {
   crowd.instanceMatrix.needsUpdate = true;
 }
 
-// ---------- 角色（人形骨架：身體、頭、手、腳） ----------
-// 骨架以「單位大小」建立，面向 +x，原點在腳底；實際大小用 scale 調整。
-const RIG_SCALE = 1.75;     // 碰撞半徑 → 外觀大小
-const WHITE = new THREE.Color(1, 1, 1);
+// ---------- 角色（真人動作捕捉骨架） ----------
+// 骨架與動作來自 CMU 動作捕捉資料庫（js/mocap.js），身體零件掛在骨頭上。
+// 片段已在轉檔時把出招方向轉成 +X；外層 Group 用 rotation.y = -facing 轉向。
+const MC = window.MOCAP;
+const SK = MC.skeleton;
+const NJ = SK.names.length;
+const JI = {};
+SK.names.forEach((n, i) => { JI[n] = i; });
+const UNIT = 2.45 / SK.height;   // 骨架單位 → 角色單位（約 2.45 高）
+const RIG_SCALE = 1.75;          // 碰撞半徑 → 外觀大小
 const ICE = new THREE.Color('#a8e4ff');
 const GRAY_LOOK = { skin: '#8a8f9a', shirt: '#7b808c', pants: '#6a6f7a', hair: '#5d626c', shoe: '#55595f' };
 
@@ -256,7 +262,7 @@ const GRAY_LOOK = { skin: '#8a8f9a', shirt: '#7b808c', pants: '#6a6f7a', hair: '
 const LOOKS = {
   grunt:   { skin: '#e0ac85', shirt: '#d9534f', pants: '#3b4a6b', hair: '#2b1d14' },
   runner:  { skin: '#c98d62', shirt: '#f0883e', pants: '#2f2f3a', hair: '#111111', band: '#ffffff', slim: 0.85 },
-  tank:    { skin: '#d9a27a', shirt: '#8e5bd1', pants: '#3a2a50', hair: '#111111', wide: 1.4 },
+  tank:    { skin: '#d9a27a', shirt: '#8e5bd1', pants: '#3a2a50', hair: '#111111', wide: 1.45 },
   bomber:  { skin: '#b07c5a', shirt: '#3a3a44', pants: '#22222a', hair: '#111111', bomb: true },
   charger: { skin: '#a86c48', shirt: '#b5652f', pants: '#4a3020', hair: '#2b1d14', horns: true, wide: 1.15 },
   drummer: { skin: '#e6b896', shirt: '#3a7bd5', pants: '#20304f', hair: '#4a2a14', drum: true },
@@ -269,160 +275,216 @@ const LOOKS = {
 
 function capsuleGeo(r, h, seg = 12) {
   const pts = [];
-  const N = 6;
+  const N = 5;
   for (let i = 0; i <= N; i++) { const a = -Math.PI / 2 + (i / N) * Math.PI / 2; pts.push(new THREE.Vector2(Math.max(0.001, Math.cos(a) * r), -h / 2 + Math.sin(a) * r)); }
   for (let i = 0; i <= N; i++) { const a = (i / N) * Math.PI / 2; pts.push(new THREE.Vector2(Math.max(0.001, Math.cos(a) * r), h / 2 + Math.sin(a) * r)); }
   return new THREE.LatheGeometry(pts, seg);
 }
+const geoCache = {};
+function segGeo(key, r, len) {
+  const k = key + r.toFixed(3);
+  if (!geoCache[k]) { const g = capsuleGeo(r, Math.max(0.01, len - r * 1.2), 10); g.translate(0, len / 2, 0); geoCache[k] = g; }
+  return geoCache[k];
+}
 function buildRigGeometries() {
-  GEO.torso = capsuleGeo(0.46, 0.38, 14);
-  GEO.rhead = new THREE.SphereGeometry(0.42, 16, 12);
-  GEO.hair = new THREE.SphereGeometry(0.445, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.55);
-  GEO.eye = new THREE.SphereGeometry(0.065, 8, 6);
-  GEO.limb = capsuleGeo(0.15, 0.4, 8);
-  GEO.rfist = new THREE.SphereGeometry(0.23, 12, 10);
-  GEO.foot = new THREE.BoxGeometry(0.32, 0.13, 0.19);
-  GEO.shorts = new THREE.CylinderGeometry(0.43, 0.46, 0.34, 14);
-  GEO.cap = new THREE.SphereGeometry(0.62, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.5);
-  GEO.band = new THREE.TorusGeometry(0.43, 0.05, 6, 20);
+  GEO.rhead = new THREE.SphereGeometry(1, 16, 12);
+  GEO.hair = new THREE.SphereGeometry(1.05, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.42);
+  GEO.eye = new THREE.SphereGeometry(1, 8, 6);
+  GEO.cap = new THREE.SphereGeometry(1, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.5);
+  GEO.band = new THREE.TorusGeometry(1, 0.12, 6, 20);
 }
 
-const GUARD = 1.25; // 手臂舉起的防禦姿勢角度
+// 身體零件：從關節到子關節的一段，[起點, 終點, 半徑, 材質]
+const SEGMENTS = [
+  ['LeftUpLeg', 'LeftLeg', 0.15, 'pants'], ['LeftLeg', 'LeftFoot', 0.12, 'shin'],
+  ['RightUpLeg', 'RightLeg', 0.15, 'pants'], ['RightLeg', 'RightFoot', 0.12, 'shin'],
+  ['LHipJoint', 'LeftUpLeg', 0.16, 'pants'], ['RHipJoint', 'RightUpLeg', 0.16, 'pants'],
+  ['LowerBack', 'Spine', 0.27, 'shirt'], ['Spine', 'Spine1', 0.3, 'shirt'], ['Spine1', 'Neck', 0.29, 'shirt'],
+  ['Neck', 'Neck1', 0.09, 'skin'], ['Neck1', 'Head', 0.09, 'skin'],
+  ['LeftShoulder', 'LeftArm', 0.13, 'shirt'], ['RightShoulder', 'RightArm', 0.13, 'shirt'],
+  ['LeftArm', 'LeftForeArm', 0.105, 'skin'], ['LeftForeArm', 'LeftHand', 0.09, 'skin'],
+  ['RightArm', 'RightForeArm', 0.105, 'skin'], ['RightForeArm', 'RightHand', 0.09, 'skin'],
+];
+const offVec = i => new THREE.Vector3(SK.offsets[i][0], SK.offsets[i][1], SK.offsets[i][2]).multiplyScalar(UNIT);
+const endVec = i => SK.ends[i] ? new THREE.Vector3(SK.ends[i][0], SK.ends[i][1], SK.ends[i][2]).multiplyScalar(UNIT) : new THREE.Vector3(0, 0.1, 0);
 
 function createRig(look, opt = {}) {
-  const root = new THREE.Group();
-  const body = new THREE.Group();
-  body.position.y = 0.85;
-  root.add(body);
+  const root = new THREE.Group();     // 位置、朝向、縮放
+  const lean = new THREE.Group();     // 受擊後仰、倒地翻滾
+  root.add(lean);
   const mats = [];
   const M = c => { const m = lambert(c); m.userData.base = new THREE.Color(c); mats.push(m); return m; };
-  const mShirt = M(look.shirt), mSkin = M(look.skin), mPants = M(look.pants), mHair = M(look.hair), mShoe = M(look.shoe || '#26262c');
+  const mat = {
+    shirt: M(look.shirt), skin: M(look.skin), pants: M(look.pants), hair: M(look.hair), shoe: M(look.shoe || '#26262c'),
+  };
+  mat.shin = look.shin ? M(look.shin) : mat.pants;
   const mGlove = opt.gloveMat || M(look.glove || look.skin);
-  const wide = look.wide || 1, slim = look.slim || 1;
-  const shadow = m => { m.castShadow = true; return m; };
-
-  const torso = shadow(new THREE.Mesh(GEO.torso, mShirt));
-  torso.position.y = 0.5;
-  torso.scale.set(0.95 * wide * slim, 1, wide * slim);
-  body.add(torso);
-  const shorts = new THREE.Mesh(GEO.shorts, mPants);
-  shorts.position.y = 0.06;
-  shorts.scale.set(wide * slim, 1, wide * slim);
-  body.add(shorts);
-
+  const wide = (look.wide || 1) * (look.slim || 1);
+  // 骨頭
+  const bones = [];
+  for (let i = 0; i < NJ; i++) {
+    const b = new THREE.Object3D();
+    if (i > 0) b.position.copy(offVec(i));
+    bones.push(b);
+    const p = SK.parents[i];
+    (p >= 0 ? bones[p] : lean).add(b);
+  }
+  const shadowSet = new Set(['Spine', 'Spine1', 'LeftUpLeg', 'RightUpLeg']);
+  for (const [a, b, r, mk] of SEGMENTS) {
+    const ia = JI[a], ib = JI[b];
+    const v = offVec(ib);
+    const len = v.length();
+    const isTorso = mk === 'shirt' && (a === 'Spine' || a === 'Spine1' || a === 'LowerBack');
+    const rr = 1.22 * r * (isTorso ? wide : (mk === 'pants' || a.includes('Arm') ? Math.sqrt(wide) : 1));
+    const m = new THREE.Mesh(segGeo(a, rr, len), mat[mk]);
+    m.quaternion.setFromUnitVectors(UP, v.clone().normalize());
+    if (isTorso) m.scale.set(1, 1, 0.75);
+    if (shadowSet.has(a)) m.castShadow = true;
+    bones[ia].add(m);
+  }
+  // 骨盆
+  const pelvis = new THREE.Mesh(GEO.unitSphere, mat.pants);
+  pelvis.scale.set(0.3 * wide, 0.22, 0.24 * wide);
+  bones[JI.Hips].add(pelvis);
+  // 頭：在 Head 關節往頭頂方向
+  const hb = bones[JI.Head];
+  const top = endVec(JI.Head);
   const head = new THREE.Group();
-  head.position.y = 1.33;
-  body.add(head);
-  const skull = shadow(new THREE.Mesh(GEO.rhead, mSkin));
+  head.position.copy(top.clone().multiplyScalar(0.55));
+  hb.add(head);
+  const HR = 0.33;
+  const skull = new THREE.Mesh(GEO.rhead, mat.skin);
+  skull.scale.setScalar(HR);
+  skull.castShadow = true;
   head.add(skull);
-  const hair = new THREE.Mesh(GEO.hair, mHair);
-  hair.rotation.z = 0.35;
+  const hair = new THREE.Mesh(GEO.hair, mat.hair);
+  hair.scale.setScalar(HR);
+  hair.rotation.x = -0.35; // 往後梳
   head.add(hair);
+  // 臉朝 +Z（骨架靜止姿勢的正面）
   const eyeMat = new THREE.MeshBasicMaterial({ color: '#111' });
   for (const s of [-1, 1]) {
     const eye = new THREE.Mesh(GEO.eye, eyeMat);
-    eye.position.set(0.37, 0.04, s * 0.15);
+    eye.scale.setScalar(0.045);
+    eye.position.set(s * 0.1, 0.0, HR * 0.93);
     head.add(eye);
-  }
-  // 生氣的眉毛
-  const browMat = new THREE.MeshBasicMaterial({ color: '#1a1a1a' });
-  for (const s of [-1, 1]) {
-    const brow = new THREE.Mesh(GEO.box, browMat);
-    brow.scale.set(0.04, 0.04, 0.16);
-    brow.position.set(0.39, 0.15, s * 0.15);
-    brow.rotation.x = s * 0.45;
+    const brow = new THREE.Mesh(GEO.box, eyeMat);
+    brow.scale.set(0.12, 0.03, 0.03);
+    brow.position.set(s * 0.1, 0.075, HR * 0.94);
+    brow.rotation.z = -s * 0.4;
     head.add(brow);
   }
-
-  const arms = [], fists = [];
-  for (const s of [-1, 1]) {
-    const sh = new THREE.Group();
-    sh.position.set(0, 0.86, s * 0.5 * wide * slim);
-    sh.rotation.z = GUARD;
-    sh.rotation.x = -s * 0.25;
-    body.add(sh);
-    const limb = new THREE.Mesh(GEO.limb, mSkin);
-    limb.position.y = -0.3;
-    sh.add(limb);
-    const fist = shadow(new THREE.Mesh(GEO.rfist, mGlove));
-    fist.position.y = -0.62;
-    if (opt.bigFists) fist.scale.setScalar(1.35);
-    sh.add(fist);
-    arms.push(sh); fists.push(fist);
+  // 拳頭、腳
+  for (const n of ['LeftHand', 'RightHand']) {
+    const f = new THREE.Mesh(GEO.unitSphere, mGlove);
+    f.scale.setScalar(opt.bigFists ? 0.17 : 0.12);
+    f.position.copy(endVec(JI[n]).multiplyScalar(0.5));
+    f.castShadow = true;
+    bones[JI[n]].add(f);
   }
-  const legs = [];
-  for (const s of [-1, 1]) {
-    const hip = new THREE.Group();
-    hip.position.set(0, 0, s * 0.2 * wide * slim);
-    body.add(hip);
-    const leg = new THREE.Mesh(GEO.limb, mPants);
-    leg.position.y = -0.4;
-    leg.scale.set(1.15, 1, 1.15);
-    hip.add(leg);
-    const foot = new THREE.Mesh(GEO.foot, mShoe);
-    foot.position.set(0.07, -0.8, 0);
-    hip.add(foot);
-    legs.push(hip);
+  for (const n of ['LeftFoot', 'RightFoot']) {
+    const toe = offVec(JI[n.replace('Foot', 'ToeBase')]);
+    const f = new THREE.Mesh(GEO.box, mat.shoe);
+    f.scale.set(0.15, 0.1, toe.length() + 0.12);
+    f.position.copy(toe.clone().multiplyScalar(0.5));
+    f.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), toe.clone().normalize());
+    bones[JI[n]].add(f);
   }
-
   // 配件
-  const acc = (geo, mat, x, y, z, sx, sy, sz, parent = body) => {
-    const m = new THREE.Mesh(geo, mat);
-    m.position.set(x, y, z); m.scale.set(sx, sy, sz);
-    parent.add(m);
-    return m;
-  };
-  if (look.band) { const b = new THREE.Mesh(GEO.band, M(look.band)); b.rotation.x = Math.PI / 2; b.position.y = 0.1; head.add(b); }
+  const acc = (geo, m, parent, x, y, z, sx, sy, sz) => { const o = new THREE.Mesh(geo, m); o.position.set(x, y, z); o.scale.set(sx, sy, sz); parent.add(o); return o; };
+  const chest = bones[JI.Spine1];
+  if (look.band) { const b = acc(GEO.band, M(look.band), head, 0, 0.05, 0, HR * 1.02, HR * 1.02, HR * 1.02); b.rotation.x = Math.PI / 2; }
   if (look.bomb) {
-    acc(GEO.unitSphere, M('#1e1e24'), -0.55, 0.65, 0, 0.36, 0.36, 0.36);
-    root.userData.fuse = acc(GEO.unitSphere, new THREE.MeshBasicMaterial({ color: '#ffb020' }), -0.6, 1.08, 0, 0.09, 0.09, 0.09);
+    acc(GEO.unitSphere, M('#1e1e24'), chest, 0, 0.1, -0.32, 0.22, 0.22, 0.22);
+    root.userData.fuse = acc(GEO.unitSphere, new THREE.MeshBasicMaterial({ color: '#ffb020' }), chest, 0, 0.36, -0.36, 0.06, 0.06, 0.06);
   }
-  if (look.horns) for (const s of [-1, 1]) {
-    const h = acc(GEO.cone, M('#efe6d0'), 0.05, 0.3, s * 0.3, 0.07, 0.32, 0.07, head);
-    h.rotation.x = s * 0.6;
-  }
-  if (look.drum) { const d = acc(GEO.cyl, M('#e8eef8'), 0.5, 0.45, 0, 0.32, 0.28, 0.32); d.rotation.z = Math.PI / 2; }
+  if (look.horns) for (const s of [-1, 1]) { const h = acc(GEO.cone, M('#efe6d0'), head, s * 0.2, 0.25, 0.05, 0.05, 0.22, 0.05); h.rotation.z = -s * 0.6; }
+  if (look.drum) { const d = acc(GEO.cyl, M('#e8eef8'), chest, 0, -0.15, 0.36, 0.2, 0.16, 0.2); d.rotation.x = Math.PI / 2; }
   if (look.mushroom) {
     hair.visible = false;
-    const cap = acc(GEO.cap, M('#d63a3a'), 0, 0.12, 0, 1, 0.85, 1, head);
-    cap.castShadow = true;
-    for (const [a, r] of [[0, 0.35], [1.6, 0.4], [3.1, 0.3], [4.5, 0.42], [2.3, 0.15]]) {
-      acc(GEO.unitSphere, M('#f5f0e0'), Math.cos(a) * r, 0.12 + 0.5 * Math.sqrt(1 - (r / 0.62) ** 2) * 0.85, Math.sin(a) * r, 0.08, 0.05, 0.08, head);
-    }
+    acc(GEO.cap, M('#d63a3a'), head, 0, 0.08, 0, 0.45, 0.36, 0.45).castShadow = true;
+    for (const [a, r] of [[0, 0.22], [1.6, 0.26], [3.1, 0.2], [4.5, 0.27], [2.3, 0.1]]) acc(GEO.unitSphere, M('#f5f0e0'), head, Math.cos(a) * r, 0.08 + 0.36 * Math.sqrt(Math.max(0, 1 - (r / 0.45) ** 2)), Math.sin(a) * r, 0.05, 0.035, 0.05);
   }
-  if (look.bag) acc(GEO.unitSphere, M('#c9952a'), -0.55, 0.6, 0, 0.34, 0.32, 0.34);
+  if (look.bag) acc(GEO.unitSphere, M('#c9952a'), chest, 0, 0, -0.36, 0.22, 0.22, 0.22);
   if (look.crown) {
     const mc = lambert('#ffd84a', { emissive: 0x553300 });
-    const ring = acc(new THREE.CylinderGeometry(0.28, 0.25, 0.16, 6, 1, true), mc, 0, 0.42, 0, 1, 1, 1, head);
+    const ring = acc(new THREE.CylinderGeometry(1, 0.9, 1, 6, 1, true), mc, head, 0, HR * 0.95, 0, 0.2, 0.1, 0.2);
     ring.material.side = THREE.DoubleSide;
-    for (let i = 0; i < 5; i++) {
-      const a = i * Math.PI * 2 / 5;
-      acc(GEO.cone, mc, Math.cos(a) * 0.25, 0.58, Math.sin(a) * 0.25, 0.06, 0.16, 0.06, head);
-    }
+    for (let i = 0; i < 5; i++) { const a = i * Math.PI * 2 / 5; acc(GEO.cone, mc, head, Math.cos(a) * 0.18, HR * 0.95 + 0.11, Math.sin(a) * 0.18, 0.04, 0.12, 0.04); }
   }
-  if (look.spikes) for (const s of [-1, 1]) {
-    acc(GEO.unitSphere, M('#444'), 0, 0.95, s * 0.52 * wide, 0.22, 0.16, 0.22);
-    for (let i = 0; i < 3; i++) acc(GEO.cone, M('#ddd'), (i - 1) * 0.12, 1.1, s * 0.55 * wide, 0.05, 0.16, 0.05);
+  if (look.spikes) for (const n of ['LeftArm', 'RightArm']) {
+    acc(GEO.unitSphere, M('#444'), bones[JI[n]], 0, 0.05, 0, 0.17, 0.12, 0.17);
+    for (let i = 0; i < 3; i++) acc(GEO.cone, M('#ddd'), bones[JI[n]], (i - 1) * 0.08, 0.17, 0, 0.035, 0.12, 0.035);
   }
-  if (look.shades) {
-    const ms = new THREE.MeshBasicMaterial({ color: '#050505' });
-    acc(GEO.box, ms, 0.33, 0.05, 0, 0.06, 0.1, 0.4, head);
-  }
-  if (look.chain) {
-    const c = new THREE.Mesh(GEO.band, lambert('#ffd84a', { emissive: 0x443300 }));
-    c.rotation.x = Math.PI / 2; c.rotation.y = 0.5; c.position.set(0.15, 0.8, 0); c.scale.setScalar(1.05);
-    body.add(c);
-  }
+  if (look.shades) acc(GEO.box, new THREE.MeshBasicMaterial({ color: '#050505' }), head, 0, 0.04, HR * 0.92, 0.32, 0.08, 0.04);
+  if (look.chain) { const c = acc(GEO.band, lambert('#ffd84a', { emissive: 0x443300 }), chest, 0, 0.15, 0.12, 0.2, 0.2, 0.2); c.rotation.x = 1.2; }
 
-  root.userData = { body, head, arms, fists, legs, mats, torso };
+  root.userData = { bones, lean, head, mats, anim: newAnim(), hairMesh: hair };
   scene.add(root);
   return root;
 }
 
+// ---------- 動畫播放器（片段內插、交叉淡入） ----------
+const CL = MC.clips;
+const CLIPS_BY = {};
+for (const k in CL) { const g = k.replace(/[RL]\d+$/, '').replace(/\d+$/, ''); const side = /R\d+$/.test(k) ? 'R' : (/L\d+$/.test(k) ? 'L' : ''); (CLIPS_BY[g + side] = CLIPS_BY[g + side] || []).push(k); }
+const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+
+function newAnim() { return { cur: null, t: 0, speed: 1, loop: true, prev: null, pt: 0, pspeed: 1, ploop: true, fade: 0, fadeDur: 0.1, hold: false }; }
+function play(a, name, o = {}) {
+  if (!CL[name]) return;
+  if (a.cur === name && !o.restart) { a.speed = o.speed ?? a.speed; return; }
+  a.prev = a.cur; a.pt = a.t; a.pspeed = a.speed; a.ploop = a.loop;
+  a.cur = name; a.t = o.t ?? 0; a.speed = o.speed ?? 1; a.loop = o.loop ?? true;
+  a.fadeDur = o.fade ?? 0.12; a.fade = a.prev ? a.fadeDur : 0;
+}
+const QA = new Float32Array(NJ * 4), QB = new Float32Array(NJ * 4), RA = new Float32Array(3), RB = new Float32Array(3);
+function sample(name, t, loop, outQ, outR) {
+  const c = CL[name];
+  const n = c.n;
+  let f = t * c.fps;
+  if (loop) { f %= n; if (f < 0) f += n; } else f = Math.min(Math.max(f, 0), n - 1);
+  const i0 = Math.floor(f), i1 = loop ? (i0 + 1) % n : Math.min(i0 + 1, n - 1), w = f - i0;
+  const q = c.q, r = c.root;
+  for (let j = 0; j < NJ; j++) {
+    const a = (i0 * NJ + j) * 4, b = (i1 * NJ + j) * 4;
+    let s = (q[a] * q[b] + q[a + 1] * q[b + 1] + q[a + 2] * q[b + 2] + q[a + 3] * q[b + 3]) < 0 ? -1 : 1;
+    for (let k = 0; k < 4; k++) outQ[j * 4 + k] = q[a + k] * (1 - w) + q[b + k] * w * s;
+  }
+  for (let k = 0; k < 3; k++) outR[k] = r[i0 * 3 + k] * (1 - w) + r[i1 * 3 + k] * w;
+  if (loop) { outR[0] = r[i0 * 3] * (1 - w) + r[i1 * 3] * w; }
+}
+function clipLen(name) { const c = CL[name]; return c.n / c.fps; }
+function stepAnim(g, dt) {
+  const a = g.userData.anim;
+  if (!a.cur) return;
+  if (!a.hold) { a.t += dt * a.speed; if (a.prev) a.pt += dt * a.pspeed; }
+  sample(a.cur, a.t, a.loop, QA, RA);
+  let w = 1;
+  if (a.prev && a.fade > 0) {
+    a.fade -= dt;
+    w = 1 - Math.max(0, a.fade) / a.fadeDur;
+    sample(a.prev, a.pt, a.ploop, QB, RB);
+    for (let j = 0; j < NJ; j++) {
+      const o = j * 4;
+      const s = (QA[o] * QB[o] + QA[o + 1] * QB[o + 1] + QA[o + 2] * QB[o + 2] + QA[o + 3] * QB[o + 3]) < 0 ? -1 : 1;
+      for (let k = 0; k < 4; k++) QA[o + k] = QA[o + k] * w + QB[o + k] * (1 - w) * s;
+    }
+    for (let k = 0; k < 3; k++) RA[k] = RA[k] * w + RB[k] * (1 - w);
+    if (a.fade <= 0) a.prev = null;
+  }
+  const bones = g.userData.bones;
+  for (let j = 0; j < NJ; j++) {
+    const o = j * 4;
+    bones[j].quaternion.set(QA[o + 1], QA[o + 2], QA[o + 3], QA[o]).normalize();
+  }
+  bones[0].position.set(RA[0] * UNIT, RA[1] * UNIT, RA[2] * UNIT);
+}
+function animDone(g) { const a = g.userData.anim; return !a.loop && a.t >= clipLen(a.cur); }
+
 // 顏色與受擊閃光
 function setRigLook(g, o) {
-  const mats = g.userData.mats;
-  for (const m of mats) {
+  for (const m of g.userData.mats) {
     if (o.frozen) m.color.copy(m.userData.base).lerp(ICE, 0.7);
     else m.color.copy(m.userData.base);
     if (o.flash) { m.emissive.setHex(0xffffff); m.emissiveIntensity = 1; }
@@ -430,25 +492,6 @@ function setRigLook(g, o) {
     else if (m.emissiveIntensity) { m.emissive.setHex(0); m.emissiveIntensity = 0; }
     if (o.opacity !== undefined) { m.transparent = o.opacity < 1; m.opacity = o.opacity; }
   }
-}
-
-// 走路、攻擊、受擊姿勢
-function poseRig(g, o) {
-  const u = g.userData;
-  const ph = o.walk || 0;
-  const sw = Math.sin(ph);
-  const amp = o.moving ? 1 : 0.15;
-  u.legs[0].rotation.z = sw * 0.75 * amp;
-  u.legs[1].rotation.z = -sw * 0.75 * amp;
-  u.body.position.y = 0.85 + Math.abs(Math.cos(ph)) * 0.06 * amp - (o.crouch ? 0.15 : 0);
-  // 身體前傾 / 受擊後仰
-  u.body.rotation.z = (o.hit || 0) * 0.6 - (o.lean || 0);
-  u.head.rotation.z = (o.hit || 0) * 0.5;
-  const guardL = GUARD + sw * 0.18 * amp, guardR = GUARD - sw * 0.18 * amp;
-  u.arms[0].rotation.z = o.punchL ? 1.6 : guardL;
-  u.arms[1].rotation.z = o.punchR ? 1.65 : guardR;
-  u.arms[1].position.x = o.punchR ? 0.12 : 0;
-  if (o.hit) { u.arms[0].rotation.z = 2.4; u.arms[1].rotation.z = 2.5; }
 }
 
 // 敵人網格池
@@ -464,6 +507,10 @@ function getEnemyMesh(e) {
     g.userData.type = e.type;
   }
   g.visible = true;
+  const a = g.userData.anim;
+  a.cur = null; a.prev = null; a.hold = false;
+  play(a, 'walk', { t: Math.random() * clipLen('walk'), fade: 0 });
+  g.userData.attackClip = null;
   enemyMap.set(e, g);
   return g;
 }
@@ -477,7 +524,7 @@ function releaseEnemy(e, g) {
   enemyPool[u.type].push(g);
 }
 
-function updateEnemy(e, g, t) {
+function updateEnemy(e, g, t, dt) {
   const r = e.r;
   const frozen = e.freezeT > 0;
   const S = r * RIG_SCALE;
@@ -485,41 +532,45 @@ function updateEnemy(e, g, t) {
   g.rotation.y = -e.face;
   g.scale.setScalar(S);
   const u = g.userData;
-  const hitK = e.squash > 0 ? e.squash / 0.12 : (e.stun > 0 ? 0.5 : 0);
-  const moving = !frozen && !(e.stun > 0) && Math.hypot(e.vx, e.vy) < 60;
+  const a = u.anim;
+  const hitK = e.squash > 0 ? e.squash / 0.12 : 0;
+  const knocked = Math.hypot(e.vx, e.vy) > 60;
+  const near = Math.hypot(e.x, e.y) < r + 24;
   const wind = e.state === 'wind';
-  if (!frozen) u.walk = (u.walk || 0) + 0.18 * (e.T.speed / 60) * (e.state === 'dash' ? 3 : 1);
-  poseRig(g, {
-    walk: u.walk, moving, hit: hitK,
-    punchR: e.lunge > 0, lean: e.state === 'dash' ? 0.5 : (wind ? 0.35 : 0), crouch: wind,
-  });
-  if (e.squash > 0) { const q = e.squash / 0.12; g.scale.set(S * (1 + 0.15 * q), S * (1 - 0.2 * q), S * (1 + 0.15 * q)); }
+  // 動作選擇
+  a.hold = frozen;
+  if (e.lunge > 0 && !u.attacking) {
+    u.attacking = true;
+    play(a, pick(CLIPS_BY.boxR.concat(CLIPS_BY.boxL)), { loop: false, speed: 1.6, fade: 0.06, t: 0.05 });
+  }
+  if (u.attacking && animDone(g)) u.attacking = false;
+  if (!u.attacking && !frozen) {
+    if (e.state === 'dash') play(a, 'run', { speed: 2.2 });
+    else if (near || knocked || e.stun > 0 || wind) play(a, 'idle', { speed: wind ? 0.3 : 1.1 });
+    else if (e.type === 'runner' || e.type === 'goldie') play(a, 'run', { speed: (e.speed / 110) * 1.1 });
+    else play(a, 'walk', { speed: Math.max(0.6, e.speed / 55) });
+  }
+  stepAnim(g, dt);
+  // 受擊後仰（以腳為支點）
+  u.lean.rotation.z = hitK * 0.55 + (e.stun > 0 ? 0.12 : 0) - (wind ? 0.25 : 0);
+  if (e.squash > 0) { const q = e.squash / 0.12; g.scale.set(S * (1 + 0.12 * q), S * (1 - 0.15 * q), S * (1 + 0.12 * q)); }
   setRigLook(g, { frozen, burn: !!e.burn, flash: e.flash > 0 || (wind && Math.floor(t * 16) % 2 === 0) });
   if (u.fuse) u.fuse.material.color.set(Math.floor(t * 12) % 2 ? '#ffe14a' : '#ff5a1f');
 
   // 護盾
   if (e.shield > 0) {
-    if (!u.shieldMesh) {
-      u.shieldMesh = new THREE.Mesh(GEO.unitSphere, basic('#5fa8ff', { opacity: 0.28 }));
-      scene.add(u.shieldMesh);
-    }
+    if (!u.shieldMesh) { u.shieldMesh = new THREE.Mesh(GEO.unitSphere, basic('#5fa8ff', { opacity: 0.28 })); scene.add(u.shieldMesh); }
     u.shieldMesh.visible = true;
     u.shieldMesh.position.set(e.x, S * 1.2, e.y);
     u.shieldMesh.scale.setScalar(S * 1.25);
   } else if (u.shieldMesh) u.shieldMesh.visible = false;
-
   // 減速圈
   if (e.slowT > 0 && !frozen) {
-    if (!u.slowRing) {
-      u.slowRing = new THREE.Mesh(GEO.ring, basic('#9be7ff', { opacity: 0.6 }));
-      u.slowRing.rotation.x = -Math.PI / 2;
-      scene.add(u.slowRing);
-    }
+    if (!u.slowRing) { u.slowRing = new THREE.Mesh(GEO.ring, basic('#9be7ff', { opacity: 0.6 })); u.slowRing.rotation.x = -Math.PI / 2; scene.add(u.slowRing); }
     u.slowRing.visible = true;
     u.slowRing.position.set(e.x, 1.5, e.y);
     u.slowRing.scale.setScalar(r * 1.3);
   } else if (u.slowRing) u.slowRing.visible = false;
-
   // 頭目與蠻牛的預警
   const T = e.T;
   const chargeWarn = wind && (T.charge || T.boss === 'charge');
@@ -544,91 +595,106 @@ function updateEnemy(e, g, t) {
   } else if (u.warn) { u.warn.visible = false; u.warnStrip.visible = false; }
 }
 
-// 被揍飛的身體：手腳攤開、空中翻滾、倒地
+// 被揍飛的身體：保留被打中那一刻的姿勢，四肢甩動、空中翻滾、倒地
 const bodyMap = new Map();
 const bodyPool = [];
-function updateBodies(bodies) {
+const tmpQ2 = new THREE.Quaternion();
+const FLAIL = ['LeftArm', 'RightArm', 'LeftUpLeg', 'RightUpLeg', 'Spine1', 'Neck'].map(n => JI[n]);
+function updateBodies(bodies, dt) {
   const alive = new Set(bodies);
   for (const [b, g] of bodyMap) if (!alive.has(b)) { g.visible = false; bodyMap.delete(b); bodyPool.push(g); }
   for (const b of bodies) {
     let g = bodyMap.get(b);
+    const u0 = g && g.userData;
     if (!g) {
       g = bodyPool.pop() || createRig(GRAY_LOOK);
       g.visible = true;
       bodyMap.set(b, g);
-      g.userData.dir = Math.atan2(b.vy, b.vx);
-      g.userData.flail = Math.random() * 10;
+      const u = g.userData;
+      u.dir = Math.atan2(b.vy, b.vx);
+      u.flail = Math.random() * 10;
+      // 從一個出招片段隨機抓一格當作被打飛的姿勢
+      const a = u.anim;
+      a.cur = null; a.prev = null;
+      play(a, pick(['idle', 'walk', 'run']), { t: Math.random(), fade: 0 });
+      a.hold = true;
+      stepAnim(g, 0);
+      u.base = u.bones.map(bn => bn.quaternion.clone());
     }
+    const u = g.userData;
     const S = b.r * RIG_SCALE;
     g.scale.setScalar(S);
-    const u = g.userData;
     const airborne = b.z > 0.5;
-    u.flail += 0.3;
-    // 手腳攤開亂揮
-    u.arms[0].rotation.z = 2.6 + Math.sin(u.flail) * 0.5;
-    u.arms[1].rotation.z = 2.4 + Math.cos(u.flail * 1.3) * 0.5;
-    u.legs[0].rotation.x = 0.5; u.legs[1].rotation.x = -0.5;
-    u.legs[0].rotation.z = airborne ? Math.sin(u.flail) * 0.6 : 0.2;
-    u.legs[1].rotation.z = airborne ? -Math.sin(u.flail) * 0.6 : -0.2;
-    u.body.rotation.z = 0; u.head.rotation.z = 0.3;
+    u.flail += dt * 14;
+    // 四肢甩動
+    FLAIL.forEach((j, i) => {
+      tmpQ2.setFromAxisAngle(i % 2 ? AX_X : AX_Z, Math.sin(u.flail + i * 1.7) * (airborne ? 0.9 : 0.15));
+      u.bones[j].quaternion.copy(u.base[j]).multiply(tmpQ2);
+    });
+    g.rotation.set(0, -u.dir, 0);
     if (airborne) {
       g.position.set(b.x, b.z, b.y);
-      g.rotation.set(b.rot * 0.6, -u.dir, -b.rot); // 往後翻
+      u.lean.rotation.set(0, 0, b.rot);        // 往後翻
     } else {
-      g.position.set(b.x, S * 0.25, b.y);
-      g.rotation.set(0, -u.dir, Math.PI / 2); // 仰躺在地上
+      g.position.set(b.x, 0, b.y);
+      u.lean.rotation.set(0, 0, Math.PI / 2);  // 仰躺
+      u.lean.position.y = S * 0.0;
     }
     setRigLook(g, { opacity: Math.min(1, b.life / 0.6) });
   }
 }
+const AX_X = new THREE.Vector3(1, 0, 0), AX_Z = new THREE.Vector3(0, 0, 1);
 
-// ---------- 主角 ----------
+// ---------- 主角：真人功夫招式 ----------
 let player = null;
-const armPool = [];
+const qiFx = [];
 function buildPlayer() {
   const gloveMat = lambert('#ff3b3b');
   gloveMat.userData.base = new THREE.Color('#ff3b3b');
-  player = createRig({ skin: '#f1bd8a', shirt: '#f1bd8a', pants: '#e8453c', hair: '#2a1a10', shoe: '#ffffff' }, { gloveMat, bigFists: true });
+  player = createRig({ skin: '#f1bd8a', shirt: '#f1bd8a', pants: '#e8453c', shin: '#f1bd8a', hair: '#2a1a10', shoe: '#f2f2f2' }, { gloveMat, bigFists: true });
   const u = player.userData;
   u.gloveMat = gloveMat;
-  u.skinMat = lambert('#f1bd8a');
-  // 頭帶與飄帶
   const bandMat = lambert('#e8453c');
   const band = new THREE.Mesh(GEO.band, bandMat);
-  band.rotation.x = Math.PI / 2; band.position.y = 0.1;
+  band.rotation.x = Math.PI / 2; band.position.y = 0.05; band.scale.setScalar(0.31);
   u.head.add(band);
   const tail = new THREE.Mesh(GEO.box, bandMat);
-  tail.scale.set(0.45, 0.05, 0.1); tail.position.set(-0.55, 0.1, 0.05);
+  tail.scale.set(0.05, 0.03, 0.3); tail.position.set(0.04, 0.05, -0.42);
   u.head.add(tail);
   u.tail = tail;
-  // 短褲白邊
-  const stripe = new THREE.Mesh(new THREE.CylinderGeometry(0.465, 0.47, 0.06, 14), lambert('#ffffff'));
-  stripe.position.y = 0.2;
-  u.body.add(stripe);
   player.scale.setScalar(PLAYER_R * RIG_SCALE);
   u.shield = new THREE.Mesh(GEO.unitSphere, basic('#7cc8ff', { opacity: 0.22 }));
   scene.add(u.shield);
+  play(u.anim, 'idle', { fade: 0 });
+  u.seen = new WeakSet();
+  u.strikeLimb = JI.RightHand;
+  u.faceYaw = 0;
+  u.count = 0;
 }
 
-function getArm(i) {
-  if (!armPool[i]) {
-    const arm = new THREE.Mesh(GEO.arm, player.userData.skinMat);
-    const glove = new THREE.Mesh(GEO.unitSphere, player.userData.gloveMat);
-    const streak = new THREE.Mesh(GEO.box, new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
-    arm.castShadow = glove.castShadow = true;
-    scene.add(arm); scene.add(glove); scene.add(streak);
-    armPool[i] = { arm, glove, streak };
+// 依出招方向挑招式；回傳 [片段名, 出招的肢體]
+function chooseMove(side, kickChance) {
+  const s = side > 0 ? 'R' : 'L';
+  const r = Math.random();
+  if (r < kickChance) {
+    const kind = pick(['front', 'round', 'side']);
+    const list = CLIPS_BY[kind + s] || CLIPS_BY[kind + 'R'];
+    const name = pick(list);
+    return [name, /L\d+$/.test(name) ? JI.LeftFoot : JI.RightFoot];
   }
-  return armPool[i];
+  const list = (Math.random() < 0.55 ? CLIPS_BY['box' + s] : CLIPS_BY['oi' + s]) || CLIPS_BY['box' + s];
+  const name = pick(list);
+  return [name, /L\d+$/.test(name) ? JI.LeftHand : JI.RightHand];
 }
 
-function updatePlayer(p, t, hurt, elements) {
+const tmpW = new THREE.Vector3();
+function updatePlayer(p, t, hurt, elements, dt, run) {
   const S = PLAYER_R * RIG_SCALE;
   const u = player.userData;
-  player.rotation.y = -p.facing;
+  const a = u.anim;
   setRigLook(player, { flash: false });
   if (hurt) for (const m of u.mats) { m.emissive.setHex(0xff2020); m.emissiveIntensity = 0.6; }
-  u.tail.rotation.y = Math.sin(t * 9) * 0.4;
+  u.tail.rotation.x = Math.sin(t * 9) * 0.4;
   // 元素拳套顏色
   const gm = u.gloveMat;
   const sk = elements || {};
@@ -637,52 +703,91 @@ function updatePlayer(p, t, hurt, elements) {
   else if (sk.icePunch) { gm.color.set('#9be7ff'); gm.emissive.set('#3fb8ff'); gm.emissiveIntensity = 0.35; }
   else { gm.color.set('#ff3b3b'); gm.emissive.set('#000000'); gm.emissiveIntensity = 0; }
 
-  const shoulderY = (0.85 + 0.86) * S;
-  const busy = { '-1': false, '1': false };
-  let ai = 0, lean = 0;
+  // 新的一拳：換招式，讓「打中」的那一格對上遊戲判定的時間
   for (const pu of p.punches) {
-    const k = pu.t / pu.dur;
-    // 快速打出 → 停住 → 收回
-    let ext;
-    if (k < 0.28) { const q = k / 0.28; ext = 1 - Math.pow(1 - q, 3); }
-    else if (k < 0.5) ext = 1;
-    else { const q = (k - 0.5) / 0.5; ext = 1 - q * q; }
-    const impact = k >= 0.28 && k < 0.5;
-    lean = Math.max(lean, ext);
-    busy[pu.side] = true;
-    const sa = p.facing + pu.side * Math.PI / 2;
-    const sx = Math.cos(sa) * S * 0.5, sz = Math.sin(sa) * S * 0.5;
-    const tgtY = pu.target && pu.target.r ? pu.target.r * RIG_SCALE * 1.7 : shoulderY;
-    const gx = sx + (pu.tx - sx) * ext, gz = sz + (pu.ty - sz) * ext;
-    const gy = shoulderY + (tgtY - shoulderY) * ext;
-    const { arm, glove, streak } = getArm(ai++);
-    arm.visible = glove.visible = true;
-    const dir = new THREE.Vector3(gx - sx, gy - shoulderY, gz - sz);
-    const len = dir.length();
-    arm.position.set((sx + gx) / 2, (shoulderY + gy) / 2, (sz + gz) / 2);
-    arm.quaternion.setFromUnitVectors(UP, dir.clone().normalize());
-    arm.scale.set(S * 0.14, Math.max(1, len), S * 0.14);
-    glove.position.set(gx, gy, gz);
-    glove.scale.setScalar(S * (impact ? 0.48 : 0.34));
-    // 出拳殘影
-    const sOp = k < 0.45 ? (1 - k / 0.45) * 0.55 : 0;
-    streak.visible = sOp > 0.02 && len > 20;
-    if (streak.visible) {
-      streak.position.copy(arm.position);
-      streak.rotation.set(0, -Math.atan2(gz - sz, gx - sx), 0);
-      streak.scale.set(len, S * 0.12, S * 0.5);
-      streak.material.opacity = sOp;
+    if (u.seen.has(pu)) continue;
+    u.seen.add(pu);
+    u.count++;
+    const crit = run && run.comboPop > 0.1 && Math.random() < 0.15;
+    const [name, limb] = (u.count % 7 === 0 && CLIPS_BY.jumpR) ? [CLIPS_BY.jumpR[0], JI.RightFoot] : chooseMove(pu.side, 0.3);
+    const c = CL[name];
+    const ti = c.impact / c.fps;
+    const hitAt = pu.dur * (pu.hitFrac || 0.5);
+    const t0 = ti * 0.45;
+    const speed = Math.max(1, (ti - t0) / Math.max(0.05, hitAt));
+    play(a, name, { loop: false, t: t0, speed, fade: 0.06, restart: true });
+    a.recover = speed;
+    u.strikeLimb = limb;
+    u.impactClipT = ti;
+    u.faceYaw = Math.atan2(pu.ty, pu.tx);
+    u.pending = pu;
+  }
+  // 打中之後放慢收招；招式結束回到待機
+  if (!a.loop && a.t > (u.impactClipT || 0)) a.speed = Math.max(1.1, (a.recover || 1) * 0.55);
+  if (!a.loop && animDone(player)) play(a, 'idle', { fade: 0.2 });
+  // 面向目標（平滑轉向）
+  let dy = u.faceYaw - (u.yaw ?? u.faceYaw);
+  dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+  u.yaw = (u.yaw ?? u.faceYaw) + dy * Math.min(1, dt * 25);
+  player.rotation.y = -u.yaw;
+  stepAnim(player, dt);
+  // 拳勁：打中瞬間，從出招的手或腳射出一道氣勁到目標
+  for (const pu of p.punches) {
+    if (pu.impact && !pu.qi) {
+      pu.qi = true;
+      player.updateMatrixWorld(true);
+      u.bones[u.strikeLimb].getWorldPosition(tmpW);
+      const tx = pu.tx, tz = pu.ty, ty = pu.target && pu.target.r ? pu.target.r * RIG_SCALE * 1.4 : 30;
+      qiFx.push({ x1: tmpW.x, y1: tmpW.y, z1: tmpW.z, x2: tx, y2: ty, z2: tz, life: 0.12, max: 0.12 });
     }
   }
-  for (let i = ai; i < armPool.length; i++) { armPool[i].arm.visible = false; armPool[i].glove.visible = false; armPool[i].streak.visible = false; }
-  // 出拳中的那隻手藏起來（由伸長的手臂取代）
-  u.arms[0].visible = !busy['-1'];
-  u.arms[1].visible = !busy['1'];
-  poseRig(player, { walk: t * 6, moving: false, lean: lean * 0.25 });
-  player.position.set(Math.cos(p.facing) * lean * 6, 0, Math.sin(p.facing) * lean * 6);
   u.shield.visible = !!p.shield;
   u.shield.position.set(0, S * 1.2, 0);
   u.shield.scale.setScalar(S * 1.5);
+}
+
+// 拳勁特效
+let qiTex = null;
+const mkQi = () => {
+  if (!qiTex) {
+    const c = document.createElement('canvas');
+    c.width = 128; c.height = 32;
+    const g = c.getContext('2d');
+    const gr = g.createLinearGradient(0, 0, 128, 0);
+    gr.addColorStop(0, 'rgba(255,255,255,0)');
+    gr.addColorStop(0.7, 'rgba(255,255,255,0.7)');
+    gr.addColorStop(1, 'rgba(255,255,255,1)');
+    g.fillStyle = gr;
+    g.beginPath(); g.moveTo(0, 14); g.lineTo(110, 2); g.lineTo(128, 16); g.lineTo(110, 30); g.lineTo(0, 18); g.fill();
+    qiTex = new THREE.CanvasTexture(c);
+  }
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: qiTex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  scene.add(m);
+  return m;
+};
+const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3();
+function syncQi(dt, color) {
+  for (const f of qiFx) f.life -= dt;
+  for (let i = qiFx.length - 1; i >= 0; i--) if (qiFx[i].life <= 0) qiFx.splice(i, 1);
+  for (const f of qiFx) {
+    const a = f.life / f.max;
+    for (const w of [1, 0.45]) {
+      const m = take('qi', mkQi);
+      tmpA.set(f.x1, f.y1, f.z1); tmpB.set(f.x2, f.y2, f.z2);
+      const len = tmpA.distanceTo(tmpB);
+      m.position.copy(tmpA).lerp(tmpB, 0.5);
+      // 面向鏡頭的長條
+      m.lookAt(camera.position);
+      const dir = tmpB.clone().sub(tmpA).normalize();
+      const right = new THREE.Vector3().subVectors(camera.position, m.position).normalize().cross(dir).normalize();
+      const up = new THREE.Vector3().crossVectors(dir, right);
+      const mtx = new THREE.Matrix4().makeBasis(dir, up, right);
+      m.quaternion.setFromRotationMatrix(mtx);
+      m.scale.set(len, (w === 1 ? 26 : 12) * (0.6 + a * 0.6), 1);
+      m.material.color.set(w === 1 ? color : '#ffffff');
+      m.material.opacity = a;
+    }
+  }
 }
 
 // ---------- 特效、投射物、掉落物 ----------
@@ -933,8 +1038,15 @@ function syncFx(run, t) {
 }
 
 // ---------- 每格渲染 ----------
+let lastRenderT = null;
 R3D.render = (run, demo, t, shake) => {
   beginPools();
+  let dt = lastRenderT === null ? 0 : Math.min(0.05, t - lastRenderT);
+  lastRenderT = t;
+  const rdt = dt;
+  // 命中停頓時動作也停住，慢動作時動作變慢
+  if (run && run.hitstop > 0) dt = 0;
+  else if (run && run.slowmo > 0) dt *= 0.3;
   const p = run ? run.p : demo;
   // 鏡頭
   let sx = 0, sz = 0;
@@ -944,11 +1056,11 @@ R3D.render = (run, demo, t, shake) => {
     sx = Math.cos(d) * osc + (Math.random() * 2 - 1) * shake * 0.3;
     sz = Math.sin(d) * osc + (Math.random() * 2 - 1) * shake * 0.3;
   }
-  const dist = camDist * (1 - (run ? run.zoom || 0 : 0));
+  const dist = camDist * (1 - (run ? run.zoom || 0 : 0)) * (R3D.debugZoom || 1); // debugZoom 僅測試用
   camera.position.set(camTarget.x + sx, camTarget.y + Math.cos(TILT) * dist, camTarget.z + Math.sin(TILT) * dist + sz);
   camera.lookAt(camTarget.x + sx, camTarget.y, camTarget.z + sz);
 
-  updatePlayer(p, t, run && p.hurtT > 0, run && run.skills);
+  updatePlayer(p, t, run && p.hurtT > 0, run && run.skills, dt, run);
   rangeRing.visible = !!run;
   if (run) {
     rangeRing.scale.setScalar(p.range);
@@ -957,15 +1069,18 @@ R3D.render = (run, demo, t, shake) => {
     for (const e of run.enemies) {
       if (e.dead) continue;
       alive.add(e);
-      updateEnemy(e, getEnemyMesh(e), t);
+      updateEnemy(e, getEnemyMesh(e), t, dt);
     }
     for (const [e, g] of enemyMap) if (!alive.has(e)) releaseEnemy(e, g);
-    updateBodies(run.bodies);
+    updateBodies(run.bodies, dt);
+    const sk = run.skills;
+    syncQi(rdt, sk.firePunch ? '#ff8a3c' : sk.thunderPunch ? '#ffe14a' : sk.icePunch ? '#9be7ff' : '#ffe9b0');
     syncFx(run, t);
     updateCrowd(t, Math.min(1, run.combo / 60));
   } else {
     for (const [e, g] of enemyMap) releaseEnemy(e, g);
-    updateBodies([]);
+    updateBodies([], dt);
+    syncQi(rdt, '#ffe9b0');
     points.geometry.setDrawRange(0, 0);
     orbXp.count = orbGold.count = 0;
     updateCrowd(t, 0.2);

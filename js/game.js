@@ -284,7 +284,7 @@ function updatePlayer(dt) {
   for (const pu of p.punches) {
     pu.t += dt;
     if (!pu.target.dead) { pu.tx = pu.target.x; pu.ty = pu.target.y; }
-    if (!pu.hit && pu.t >= pu.dur * 0.28) { pu.hit = true; pu.impact = true; punchHit(pu.target); }
+    if (!pu.hit && pu.t >= pu.dur * pu.hitFrac) { pu.hit = true; pu.impact = true; punchHit(pu.target); }
   }
   p.punches = p.punches.filter(pu => pu.t < pu.dur);
 }
@@ -293,7 +293,7 @@ function launchPunch(target, rate) {
   const p = run.p;
   p.armSide = -p.armSide;
   p.facing = Math.atan2(target.y, target.x);
-  p.punches.push({ target, tx: target.x, ty: target.y, side: p.armSide, t: 0, dur: Math.min(0.17, rate * 0.8), hit: false });
+  p.punches.push({ target, tx: target.x, ty: target.y, side: p.armSide, t: 0, dur: Math.min(0.32, rate * 0.9), hitFrac: 0.5, hit: false });
   SFX.swing();
 }
 
@@ -1156,7 +1156,7 @@ function showTitle() {
   showOverlay(`
     <p class="sub">ROGUELIKE 拳擊</p>
     <h1>RL FIGHT</h1>
-    <p>站在八角籠中央，橡皮鐵臂會自動揍飛範圍內的敵人。<br>打倒敵人升級、挑技能、組元素，撐過一章又一章。</p>
+    <p>站在八角籠中央，用真人功夫拳腳把範圍內的敵人揍飛。<br>打倒敵人升級、挑技能、組元素，撐過一章又一章。</p>
     <div class="stats">
       <span>最高分</span><span>${save.best}</span>
       <span>最遠進度</span><span>第 ${save.bestChapter || 1} 章 第 ${save.bestWave} 波</span>
@@ -1167,6 +1167,7 @@ function showTitle() {
       <button class="btn alt" data-act="shop">道場</button>
     </div>
     <p class="small">全自動戰鬥：出拳、技能、爆發都會自己放｜升級時選強化（1 2 3）｜P 暫停　M 靜音</p>
+    <p class="small" style="opacity:.55">動作捕捉資料：CMU Graphics Lab Motion Capture Database（mocap.cs.cmu.edu）</p>
   `);
 }
 
@@ -1420,10 +1421,10 @@ function render(dt) {
     // 標題：主角對空揮拳
     demoT -= dt;
     if (demoT <= 0) {
-      demoT = 0.35;
+      demoT = 0.7;
       const a = rand(0, Math.PI * 2);
       demo.facing = a;
-      demo.punches.push({ tx: Math.cos(a) * 130, ty: Math.sin(a) * 130, side: demo.punches.length % 2 ? 1 : -1, t: 0, dur: 0.22 });
+      demo.punches.push({ tx: Math.cos(a) * 130, ty: Math.sin(a) * 130, side: Math.random() < 0.5 ? 1 : -1, t: 0, dur: 0.3, hitFrac: 0.5 });
     }
     for (const pu of demo.punches) pu.t += dt;
     demo.punches = demo.punches.filter(pu => pu.t < pu.dur);

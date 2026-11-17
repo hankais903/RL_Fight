@@ -6,6 +6,7 @@ css = (root / 'css/style.css').read_text(encoding='utf-8')
 data = (root / 'js/data.js').read_text(encoding='utf-8')
 game = (root / 'js/game.js').read_text(encoding='utf-8')
 r3d = (root / 'js/render3d.js').read_text(encoding='utf-8')
+mocap = (root / 'js/mocap.js').read_text(encoding='utf-8')
 html = f"""<title>RL Fight</title>
 <style>
 :root {{ color-scheme: dark; }}
@@ -21,6 +22,9 @@ html = f"""<title>RL Fight</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 {data}
+</script>
+<script>
+{mocap}
 </script>
 <script>
 {r3d}

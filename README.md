@@ -32,7 +32,9 @@ index.html            進入點
 css/style.css         介面樣式
 js/data.js            敵人、強化、技能、元素組合、道場資料（調數值改這裡）
 js/game.js            遊戲邏輯、2D 介面、輸入、音效
-js/render3d.js        3D 畫面（Three.js）：擂台、角色、特效
+js/render3d.js        3D 畫面（Three.js）：擂台、角色骨架與動畫、特效
+js/mocap.js           動作捕捉動畫資料（由 tools/mocap/extract.py 產生）
+tools/mocap/          動作捕捉轉換工具
 vendor/three.min.js   Three.js r128（MIT 授權），讓本機離線也能玩
 tools/build_demo.py   打包成單一 HTML（試玩版）
 docs/                 參考遊戲系統分析
@@ -43,3 +45,18 @@ docs/                 參考遊戲系統分析
 - 裝備系統（手套／頭盔／鞋子、稀有度、寶石）
 - 天賦樹、英雄／寵物
 - 更多敵人、頭目招式與章節場景
+
+## 動作捕捉資料
+
+角色的出拳、踢腿、架式、走路、跑步都是真人動作捕捉，來自 CMU 動作捕捉資料庫（空手道上段突、前踢、迴旋踢、側踢、飛踢、拳擊等），BVH 轉檔由 Bruce Hahne 製作。CMU 聲明此資料可免費用於研究與商業專案。
+
+> The data used in this project was obtained from mocap.cs.cmu.edu.
+> The database was created with funding from NSF EIA-0196217.
+
+重新產生動畫資料：
+
+```bash
+python3 tools/mocap/extract.py <放 BVH 檔的資料夾>
+```
+
+需要的 BVH 檔（從 https://github.com/una-dinosauria/cmu-mocap 的 `data/` 下載）：135_04、135_07、135_09、135_11、14_01、07_01、141_01、90_05。
