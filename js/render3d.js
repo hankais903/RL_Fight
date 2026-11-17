@@ -875,12 +875,14 @@ function strikeOffset(name, limb) {
   probe.updateMatrixWorld(true);
   probe.userData.bones[limb].getWorldPosition(tmpW);
   limbAngle[key] = Math.atan2(tmpW.z, tmpW.x);
+  limbReach[key] = Math.hypot(tmpW.x, tmpW.z);
   const hips = new THREE.Vector3();
   probe.userData.bones[JI.Hips].getWorldPosition(hips);
   limbPose[key] = { hips, vec: tmpW.clone().sub(hips) };
   return limbAngle[key];
 }
 const limbPose = {};
+const limbReach = {};
 const QI = new THREE.Quaternion();
 const smooth = x => x * x * (3 - 2 * x);
 // 限制旋轉角度（避免整個人翻過頭）
@@ -922,20 +924,22 @@ function updatePlayer(p, t, hurt, elements, dt, run) {
     a.recover = speed;
     u.strikeLimb = limb;
     u.impactClipT = ti;
-    u.faceYaw = Math.atan2(pu.ty, pu.tx) - strikeOffset(name, limb);
+    u.faceYaw = Math.atan2(pu.ty - (p.y || 0), pu.tx - (p.x || 0)) - strikeOffset(name, limb);
+    u.reach = limbReach[name + ':' + limb] * S; // 這招打到最遠時，拳腳離身體的水平距離
     u.yaw = u.faceYaw; // 出招瞬間直接轉到位
     u.pending = pu;
     u.pendingName = name;
+    u.strikeT0 = t0;
     u.flight = null;
     if (name.startsWith('fly')) {
       strikeOffset(name, limb);
       const lp = limbPose[name + ':' + limb];
       const ang = limbAngle[name + ':' + limb];
       const dir = new THREE.Vector3(Math.cos(ang), -0.08, Math.sin(ang)).normalize();
-      const dist = Math.hypot(pu.tx, pu.ty);
+      const dist = 0;
       const reach = lp.vec.length() * S;
       u.flight = {
-        name, t0, theta: Math.atan2(pu.ty, pu.tx),
+        name, t0, theta: 0,
         D: Math.max(0, Math.min(170, dist - reach * 0.9 - (pu.target && pu.target.r ? pu.target.r : 15))),
         H: 26,
         R: clampTilt(new THREE.Quaternion().setFromUnitVectors(lp.vec.clone().normalize(), dir), 85),
@@ -945,7 +949,7 @@ function updatePlayer(p, t, hurt, elements, dt, run) {
   }
   // 命中前持續追蹤目標（敵人還在移動）
   if (u.pending && !u.pending.impact) {
-    u.faceYaw = Math.atan2(u.pending.ty, u.pending.tx) - strikeOffset(u.pendingName, u.strikeLimb);
+    u.faceYaw = Math.atan2(u.pending.ty - (p.y || 0), u.pending.tx - (p.x || 0)) - strikeOffset(u.pendingName, u.strikeLimb);
     u.yaw = u.faceYaw;
   }
   // 打中之後放慢收招；招式結束回到待機
@@ -977,8 +981,9 @@ function updatePlayer(p, t, hurt, elements, dt, run) {
       const tx = pu.tx, tz = pu.ty, ty = pu.target && pu.target.r ? pu.target.r * RIG_SCALE * 1.4 : 30;
       // 測試用：記錄出招肢體方向與目標方向的角度差
       if (R3D.debugAngles) {
-        let d = Math.atan2(tmpW.z - player.position.z, tmpW.x - player.position.x) - Math.atan2(tz, tx);
+        let d = Math.atan2(tmpW.z - player.position.z, tmpW.x - player.position.x) - Math.atan2(tz - player.position.z, tx - player.position.x);
         R3D.debugAngles.push(Math.abs(Math.atan2(Math.sin(d), Math.cos(d))) * 180 / Math.PI);
+        if (!pu.extra) (R3D.debugReach = R3D.debugReach || []).push(Math.round(Math.hypot(tmpW.x - tx, tmpW.z - tz) - (pu.target && pu.target.r ? pu.target.r : 0)));
         (R3D.debugInfo = R3D.debugInfo || []).push([u.pendingName, Math.round(Math.abs(Math.atan2(Math.sin(d), Math.cos(d))) * 180 / Math.PI), u.anim.cur, +(u.anim.t - u.impactClipT).toFixed(3)]);
       }
       qiFx.push({ x1: tmpW.x, y1: tmpW.y, z1: tmpW.z, x2: tx, y2: ty, z2: tz, life: 0.12, max: 0.12 });
@@ -1000,7 +1005,20 @@ function updatePlayer(p, t, hurt, elements, dt, run) {
       }
     } else if (f) u.flight = null;
     if (!isFinite(off) || !isFinite(h)) { off = 0; h = 0; w = 0; u.flight = null; }
-    player.position.set(Math.cos(f ? f.theta : 0) * off, h, Math.sin(f ? f.theta : 0) * off);
+    // 站位微調：遊戲邏輯以固定距離站在敵人面前，這裡依這一招的實際攻擊距離前後調整
+    let cx = 0, cz = 0;
+    const pu0 = u.pending;
+    if (pu0 && !a.loop) {
+      const gx = (p.x || 0), gz = (p.y || 0);
+      const ddx = pu0.tx - gx, ddz = pu0.ty - gz, dd = Math.hypot(ddx, ddz) || 1;
+      const stand = (pu0.target && pu0.target.r ? pu0.target.r : 15) + PLAYER_R + 6;
+      const k = a.t < u.impactClipT ? smooth(Math.min(1, Math.max(0, (a.t - (u.strikeT0 || 0)) / Math.max(0.01, u.impactClipT - (u.strikeT0 || 0)))))
+        : Math.max(0, 1 - (a.t - u.impactClipT) / 0.35);
+      const tr = pu0.target && pu0.target.r ? pu0.target.r : 15;
+      const adj = Math.max(-40, Math.min(40, stand - ((u.reach || stand) + tr * 1.0))) * k; // 拳腳落在敵人身體表面
+      cx = ddx / dd * adj; cz = ddz / dd * adj;
+    }
+    player.position.set((p.x || 0) + cx, h, (p.y || 0) + cz);
     if (w > 0) {
       u.lean.quaternion.copy(QI).slerp(f.R, w);
       u.lean.position.copy(f.pivot).sub(f.pivot.clone().applyQuaternion(u.lean.quaternion));
@@ -1015,7 +1033,7 @@ function updatePlayer(p, t, hurt, elements, dt, run) {
     u.lean.scale.set(sx, sy, 1 / Math.sqrt(sx * sy));
   }
   u.shield.visible = !!p.shield;
-  u.shield.position.set(0, S * 1.2, 0);
+  u.shield.position.set(player.position.x, S * 1.2, player.position.z);
   u.shield.scale.setScalar(S * 1.5);
 }
 
@@ -1379,7 +1397,7 @@ function syncFx(run, t) {
         const d = f.r * (i % 2 ? 0.55 : 0.85);
         const m = take('spike', mkSpike);
         const h = (i % 2 ? 34 : 46) * up;
-        m.position.set(Math.cos(ang) * d, h / 2, Math.sin(ang) * d);
+        m.position.set((f.x || 0) + Math.cos(ang) * d, h / 2, (f.y || 0) + Math.sin(ang) * d);
         m.scale.set(9, Math.max(0.1, h), 9);
         m.rotation.set(Math.sin(ang) * 0.25, 0, -Math.cos(ang) * 0.25);
         m.material.opacity = Math.min(1, a * 3);
@@ -1485,7 +1503,7 @@ R3D.render = (run, demo, t, shake) => {
   }
   const dist = camDist * (1 - (run ? run.zoom || 0 : 0)) * (R3D.debugZoom || 1); // debugZoom 僅測試用
   // 飛踢時鏡頭跟過去一部分
-  camFollow.lerp(tmpV.set(player.position.x * 0.45, 0, player.position.z * 0.45), Math.min(1, rdt * 8));
+  camFollow.lerp(tmpV.set(player.position.x * 0.35, 0, player.position.z * 0.35), Math.min(1, rdt * 6));
   sx += camFollow.x; sz += camFollow.z;
   camera.position.set(camTarget.x + sx, camTarget.y + Math.cos(TILT) * dist, camTarget.z + Math.sin(TILT) * dist + sz);
   camera.lookAt(camTarget.x + sx, camTarget.y, camTarget.z + sz);

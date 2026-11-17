@@ -274,23 +274,47 @@ function updatePlayer(dt) {
   // 自動出拳
   p.punchT -= dt;
   const rate = p.rate * (tier >= 4 ? 0.75 : 1);
+  // 只攻擊黃色圈（攻擊範圍，以擂台中心為圓心）裡的敵人
+  const zone = zoneEnemies();
   if (p.punchT <= 0) {
-    const targets = nearestEnemies(p.range, p.multi);
-    if (targets.length) {
+    if (zone.length) {
       p.punchT = rate;
       p.strikeN = (p.strikeN || 0) + 1;
-      // 每第 6 招是組合技收尾：飛踢，目標改成範圍內（放寬 30%）最遠的敵人，飛得更遠
       if (p.strikeN % 6 === 0) {
-        let far = null, fd = -1;
-        for (const e of run.enemies) {
-          if (e.dead) continue;
-          const d = Math.hypot(e.x, e.y) - e.r;
-          if (d <= p.range * 1.3 && d > fd) { fd = d; far = e; }
-        }
-        launchPunch(far || targets[0], rate, true);
-        p.punchT = rate * 1.6; // 收尾招稍微多一點時間
-      } else for (const t of targets) launchPunch(t, rate);
+        // 組合技收尾：飛踢衝向圈內離主角最遠的敵人
+        let far = zone[0], fd = -1;
+        for (const e of zone) { const d = Math.hypot(e.x - p.x, e.y - p.y); if (d > fd) { fd = d; far = e; } }
+        launchPunch(far, rate, true);
+        p.punchT = rate * 1.6;
+      } else {
+        launchPunch(zone[0], rate);
+        // 多重拳：其餘目標用拳勁打（不衝過去）
+        for (let i = 1; i < Math.min(p.multi, zone.length); i++) launchPunch(zone[i], rate, false, true);
+      }
     }
+  }
+  // 衝刺：在命中前移動到目標面前；圈內沒有敵人時走回中央
+  const main = p.punches.find(pu => !pu.extra && !pu.hit);
+  if (main) {
+    const tg = main.target;
+    const tx = tg.dead ? main.tx : tg.x, ty = tg.dead ? main.ty : tg.y;
+    let dx = tx - p.x, dy = ty - p.y;
+    const d = Math.hypot(dx, dy) || 1;
+    const stand = (tg.r || 15) + PLAYER_R + 6;
+    let gx = tx - dx / d * stand, gy = ty - dy / d * stand;
+    const gl = Math.hypot(gx, gy);
+    if (gl > p.range) { gx *= p.range / gl; gy *= p.range / gl; } // 不出圈
+    const left = Math.max(dt, main.dur * main.hitFrac - main.t);
+    const mx = gx - p.x, my = gy - p.y, md = Math.hypot(mx, my);
+    if (md > 0.5) {
+      const step = Math.min(md, (md / left) * dt);
+      p.x += mx / md * step; p.y += my / md * step;
+      if (md / left > 500 && Math.random() < 0.6) run.fx.push({ kind: 'smoke', x: p.x, y: p.y, h: 6, vx: -mx / md * 60, vy: -my / md * 60, size: 14, life: 0.35, max: 0.35 });
+    }
+    p.facing = Math.atan2(ty - p.y, tx - p.x);
+  } else if (!zone.length) {
+    const d = Math.hypot(p.x, p.y);
+    if (d > 1) { const step = Math.min(d, 160 * dt); p.x -= p.x / d * step; p.y -= p.y / d * step; }
   }
   for (const pu of p.punches) {
     pu.t += dt;
@@ -300,12 +324,24 @@ function updatePlayer(dt) {
   p.punches = p.punches.filter(pu => pu.t < pu.dur);
 }
 
-function launchPunch(target, rate, finisher = false) {
+// 攻擊範圍內的敵人，依離主角的距離排序
+function zoneEnemies() {
+  const p = run.p, out = [];
+  for (const e of run.enemies) {
+    if (e.dead) continue;
+    if (Math.hypot(e.x, e.y) - e.r > p.range) continue;
+    out.push([Math.hypot(e.x - p.x, e.y - p.y), e]);
+  }
+  out.sort((a, b) => a[0] - b[0]);
+  return out.map(x => x[1]);
+}
+
+function launchPunch(target, rate, finisher = false, extra = false) {
   const p = run.p;
-  p.armSide = -p.armSide;
-  p.facing = Math.atan2(target.y, target.x);
+  if (!extra) p.armSide = -p.armSide;
+  if (!extra) p.facing = Math.atan2(target.y - p.y, target.x - p.x);
   const dur = finisher ? Math.min(0.45, rate * 1.4) : Math.min(0.32, rate * 0.9);
-  p.punches.push({ target, tx: target.x, ty: target.y, side: p.armSide, t: 0, dur, hitFrac: finisher ? 0.6 : 0.5, hit: false, finisher });
+  p.punches.push({ target, tx: target.x, ty: target.y, side: p.armSide, t: 0, dur, hitFrac: finisher ? 0.6 : 0.5, hit: false, finisher, extra });
   SFX.swing();
 }
 
@@ -320,7 +356,7 @@ function punchHit(e, pu) {
     return;
   }
   const p = run.p;
-  const dir = Math.atan2(e.y, e.x);
+  const dir = Math.atan2(e.y - p.y, e.x - p.x);
   let dmg = pDmg() * COMBO_DMG[comboTier()];
   let crit = Math.random() < p.crit + (comboTier() >= 5 ? 0.15 : 0);
   if (e.freezeT > 0 && run.syn.shatter) crit = true;
@@ -445,7 +481,7 @@ function killEnemy(e, o = {}) {
   const g = Math.max(1, Math.round(e.T.gold * p.goldMult));
   if (e.T.gold >= 3 || Math.random() < 0.35) run.orbs.push({ x: e.x, y: e.y, kind: 'gold', v: g, t: 0, vx: rand(-80, 80), vy: rand(-80, 80) });
   // 被揍飛的身體
-  const dir = o.dir !== undefined ? o.dir : Math.atan2(e.y, e.x);
+  const dir = o.dir !== undefined ? o.dir : Math.atan2(e.y - run.p.y, e.x - run.p.x);
   const sp = rand(520, 780) / Math.sqrt(e.T.mass) * (e.T.boss ? 0.4 : 1);
   if (o.punch) {
     if (Math.random() < 0.18) addComic(e.x, e.y, dir);
@@ -476,7 +512,7 @@ function explosion(x, y, r, dmg, hurtsPlayer, color) {
     if (o.dead) continue;
     if (dist2(o, { x, y }) < (r + o.r) ** 2) damageEnemy(o, dmg, { dir: Math.atan2(o.y - y, o.x - x), kb: 150 });
   }
-  if (hurtsPlayer && x * x + y * y < (r + PLAYER_R) ** 2) hurtPlayer(hurtsPlayer);
+  if (hurtsPlayer && (x - run.p.x) ** 2 + (y - run.p.y) ** 2 < (r + PLAYER_R) ** 2) hurtPlayer(hurtsPlayer);
 }
 
 function applyBurn(e, dps, dur) {
@@ -527,7 +563,7 @@ function hurtPlayer(d) {
   if (state !== 'play' || run.god) return;
   if (p.shield > 0) {
     p.shield = 0; p.shieldT = 6;
-    run.fx.push({ kind: 'ring', x: 0, y: 0, r: 10, maxR: 40, life: 0.25, max: 0.25, color: '#7cc8ff', w: 4 });
+    run.fx.push({ kind: 'ring', x: p.x, y: p.y, r: 10, maxR: 40, life: 0.25, max: 0.25, color: '#7cc8ff', w: 4 });
     return;
   }
   p.hp -= d;
@@ -546,11 +582,12 @@ function hurtPlayer(d) {
 }
 
 function shockwave(r, dmg) {
-  run.fx.push({ kind: 'ring', x: 0, y: 0, r: 20, maxR: r, life: 0.45, max: 0.45, color: '#ffffff', w: 10 });
+  const P = run.p;
+  run.fx.push({ kind: 'ring', x: P.x, y: P.y, r: 20, maxR: r, life: 0.45, max: 0.45, color: '#ffffff', w: 10 });
   run.shake = 16; run.flash = 0.2;
   for (const o of run.enemies) {
     if (o.dead) continue;
-    if (o.x * o.x + o.y * o.y < (r + o.r) ** 2) damageEnemy(o, dmg, { dir: Math.atan2(o.y, o.x), kb: 500 });
+    if ((o.x - P.x) ** 2 + (o.y - P.y) ** 2 < (r + o.r) ** 2) damageEnemy(o, dmg, { dir: Math.atan2(o.y - P.y, o.x - P.x), kb: 500 });
   }
 }
 
@@ -571,10 +608,11 @@ const SKILLS = {
     cast(lv) {
       const t = nearestEnemies(9999, 1)[0];
       const n = 1 + Math.floor(lv / 2);
-      const base = t ? Math.atan2(t.y, t.x) : run.p.facing;
+      const P = run.p;
+      const base = t ? Math.atan2(t.y - P.y, t.x - P.x) : P.facing;
       for (let i = 0; i < n; i++) {
         const a = base + (i - (n - 1) / 2) * 0.22;
-        run.projs.push({ kind: 'rocket', x: 0, y: 0, vx: Math.cos(a) * 520, vy: Math.sin(a) * 520, r: 13, life: 1.2,
+        run.projs.push({ kind: 'rocket', x: P.x, y: P.y, vx: Math.cos(a) * 520, vy: Math.sin(a) * 520, r: 13, life: 1.2,
           dmg: pDmg() * (2 + 0.6 * lv) * run.p.skillDmg, hit: new Set() });
       }
     },
@@ -583,17 +621,18 @@ const SKILLS = {
     cd: lv => 5.5 - 0.35 * lv,
     cast(lv) {
       const r = 130 + 18 * lv;
-      run.fx.push({ kind: 'ring', x: 0, y: 0, r: 20, maxR: r, life: 0.45, max: 0.45, color: '#e0b07a', w: 14 });
-      run.fx.push({ kind: 'ring', x: 0, y: 0, r: 10, maxR: r * 0.6, life: 0.3, max: 0.3, color: '#ffffff', w: 8 });
+      const P = run.p;
+      run.fx.push({ kind: 'ring', x: P.x, y: P.y, r: 20, maxR: r, life: 0.45, max: 0.45, color: '#e0b07a', w: 14 });
+      run.fx.push({ kind: 'ring', x: P.x, y: P.y, r: 10, maxR: r * 0.6, life: 0.3, max: 0.3, color: '#ffffff', w: 8 });
       for (let i = 0; i < 40; i++) {
         const a = rand(0, Math.PI * 2), d = rand(30, r);
-        run.fx.push({ kind: 'dot', x: Math.cos(a) * d, y: Math.sin(a) * d, z: 4, vz: rand(150, 380), vx: Math.cos(a) * 60, vy: Math.sin(a) * 60, size: 6, color: '#b08a60', life: 0.6, max: 0.6 });
+        run.fx.push({ kind: 'dot', x: P.x + Math.cos(a) * d, y: P.y + Math.sin(a) * d, z: 4, vz: rand(150, 380), vx: Math.cos(a) * 60, vy: Math.sin(a) * 60, size: 6, color: '#b08a60', life: 0.6, max: 0.6 });
       }
       run.shake = Math.max(run.shake, 14); run.zoom = Math.max(run.zoom, 0.04);
       SFX.boom();
       for (const o of run.enemies) {
         if (o.dead) continue;
-        if (o.x * o.x + o.y * o.y < (r + o.r) ** 2) damageEnemy(o, pDmg() * (1.6 + 0.5 * lv) * run.p.skillDmg, { dir: Math.atan2(o.y, o.x), kb: 320 });
+        if ((o.x - P.x) ** 2 + (o.y - P.y) ** 2 < (r + o.r) ** 2) damageEnemy(o, pDmg() * (1.6 + 0.5 * lv) * run.p.skillDmg, { dir: Math.atan2(o.y - P.y, o.x - P.x), kb: 320 });
       }
     },
   },
@@ -617,13 +656,13 @@ const SKILLS = {
       s.pos = [];
       for (let i = 0; i < n; i++) {
         const a = s.ang + i * Math.PI * 2 / n;
-        const pos = { x: Math.cos(a) * 92, y: Math.sin(a) * 92 };
+        const pos = { x: run.p.x + Math.cos(a) * 92, y: run.p.y + Math.sin(a) * 92 };
         s.pos.push(pos);
         for (const e of run.enemies) {
           if (e.dead) continue;
           if (dist2(e, pos) < (e.r + 14) ** 2 && (e.hitBy.orbit || 0) < run.time) {
             e.hitBy.orbit = run.time + 0.45;
-            damageEnemy(e, pDmg() * (0.7 + 0.25 * lv) * run.p.skillDmg, { dir: Math.atan2(e.y, e.x), kb: 120 });
+            damageEnemy(e, pDmg() * (0.7 + 0.25 * lv) * run.p.skillDmg, { dir: Math.atan2(e.y - run.p.y, e.x - run.p.x), kb: 120 });
             SFX.hit();
           }
         }
@@ -643,14 +682,15 @@ const SKILLS = {
     cd: lv => 7.5 - 0.4 * lv,
     cast(lv) {
       const r = 140 + 15 * lv;
-      run.fx.push({ kind: 'ring', x: 0, y: 0, r: 20, maxR: r, life: 0.4, max: 0.4, color: '#9be7ff', w: 14 });
-      run.fx.push({ kind: 'spikes', r, life: 0.9, max: 0.9 });
+      const P = run.p;
+      run.fx.push({ kind: 'ring', x: P.x, y: P.y, r: 20, maxR: r, life: 0.4, max: 0.4, color: '#9be7ff', w: 14 });
+      run.fx.push({ kind: 'spikes', x: P.x, y: P.y, r, life: 0.9, max: 0.9 });
       run.shake = Math.max(run.shake, 6);
       for (const o of run.enemies) {
         if (o.dead) continue;
-        if (o.x * o.x + o.y * o.y < (r + o.r) ** 2) {
+        if ((o.x - P.x) ** 2 + (o.y - P.y) ** 2 < (r + o.r) ** 2) {
           applyFreeze(o, 1.1 + 0.15 * lv);
-          damageEnemy(o, pDmg() * (1 + 0.3 * lv) * run.p.skillDmg, { dir: Math.atan2(o.y, o.x), kb: 30 });
+          damageEnemy(o, pDmg() * (1 + 0.3 * lv) * run.p.skillDmg, { dir: Math.atan2(o.y - P.y, o.x - P.x), kb: 30 });
         }
       }
     },
@@ -672,13 +712,13 @@ function notifySkill(id) {
   // 前幾次施放顯示技能名稱，讓玩家認得
   if (run.castCount[id] <= 4) {
     const info = SKILL_INFO[id];
-    run.texts.push({ x: 0, y: 0, h: 95, text: `${info.icon} ${info.name}`, color: ELEMENT_COLOR[info.element] || '#ffffff', size: 18, life: 1.1, max: 1.1, label: true });
+    run.texts.push({ x: run.p.x, y: run.p.y, h: 95, text: `${info.icon} ${info.name}`, color: ELEMENT_COLOR[info.element] || '#ffffff', size: 18, life: 1.1, max: 1.1, label: true });
   }
 }
 
 function densest(range) {
   let best = null, bc = -1;
-  const cand = run.enemies.filter(e => !e.dead && e.x * e.x + e.y * e.y < range * range);
+  const cand = run.enemies.filter(e => !e.dead && (e.x - run.p.x) ** 2 + (e.y - run.p.y) ** 2 < range * range);
   for (let i = 0; i < Math.min(16, cand.length); i++) {
     const e = cand[Math.floor(Math.random() * cand.length)];
     let c = 0;
@@ -728,8 +768,8 @@ function updateEnemies(dt) {
     if (e.stun > 0) { e.stun -= dt; continue; }
     const knocked = Math.hypot(e.vx, e.vy) > 60;
     if (knocked && Math.random() < 0.35) run.fx.push({ kind: 'dot', x: e.x, y: e.y, z: 3, vz: rand(30, 90), vx: -e.vx * 0.1, vy: -e.vy * 0.1, size: 5, color: '#8a7a6a', life: 0.35, max: 0.35 });
-    const d = Math.hypot(e.x, e.y);
-    const nx = -e.x / (d || 1), ny = -e.y / (d || 1);
+    const d = Math.hypot(p.x - e.x, p.y - e.y);
+    const nx = (p.x - e.x) / (d || 1), ny = (p.y - e.y) / (d || 1);
     e.face = Math.atan2(ny, nx);
     let spd = e.speed * (e.slowT > 0 ? 0.5 : 1);
     const reach = e.r + PLAYER_R + 2;
@@ -816,7 +856,7 @@ function updateEnemies(dt) {
     if (e.lunge) e.lunge = Math.max(0, e.lunge - dt);
     // 不能穿過主角
     const minD = e.r + PLAYER_R;
-    if (d < minD) { e.x = -nx * minD; e.y = -ny * minD; }
+    if (d < minD) { e.x = p.x - nx * minD; e.y = p.y - ny * minD; }
   }
   separate();
 }
@@ -872,7 +912,7 @@ function updateProjectiles(dt) {
   for (const b of run.eprojs) {
     b.x += b.vx * dt; b.y += b.vy * dt; b.rot += dt * 12; b.life -= dt;
     // 主角會自動把飛來的酒瓶揮掉（在出拳範圍內有機率）
-    if (b.x * b.x + b.y * b.y < (PLAYER_R + 6) ** 2) { b.dead = true; hurtPlayer(b.dmg); }
+    if ((b.x - p.x) ** 2 + (b.y - p.y) ** 2 < (PLAYER_R + 6) ** 2) { b.dead = true; hurtPlayer(b.dmg); }
     if (b.life <= 0) b.dead = true;
   }
   run.eprojs = run.eprojs.filter(x => !x.dead);
@@ -909,7 +949,7 @@ function updateProjectiles(dt) {
       if (z.kind === 'fire') {
         for (const e of run.enemies) if (!e.dead && dist2(e, z) < (z.r + e.r) ** 2) { damageEnemy(e, z.dmg, {}); applyBurn(e, z.dmg, 2); }
       } else if (z.kind === 'poison') {
-        if (z.x * z.x + z.y * z.y < (z.r + PLAYER_R) ** 2) hurtPlayer(Math.round(2 * scaling().dmg));
+        if ((z.x - run.p.x) ** 2 + (z.y - run.p.y) ** 2 < (z.r + PLAYER_R) ** 2) hurtPlayer(Math.round(2 * scaling().dmg));
       }
     }
   }
@@ -918,9 +958,10 @@ function updateProjectiles(dt) {
   for (const o of run.orbs) {
     o.t += dt;
     if (o.t < 0.25) { o.x += o.vx * dt; o.y += o.vy * dt; continue; }
-    const d = Math.hypot(o.x, o.y) || 1;
+    const ox = o.x - p.x, oy = o.y - p.y;
+    const d = Math.hypot(ox, oy) || 1;
     const sp = 300 + o.t * 900;
-    o.x -= o.x / d * sp * dt; o.y -= o.y / d * sp * dt;
+    o.x -= ox / d * sp * dt; o.y -= oy / d * sp * dt;
     if (d < 18) {
       o.dead = true;
       if (o.kind === 'xp') gainXp(o.v * p.xpGain);
@@ -1226,7 +1267,7 @@ function showTitle() {
   showOverlay(`
     <p class="sub">ROGUELIKE 拳擊</p>
     <h1>RL FIGHT</h1>
-    <p>站在八角籠中央，用真人功夫拳腳把範圍內的敵人揍飛。<br>打倒敵人升級、挑技能、組元素，撐過一章又一章。</p>
+    <p>黃色圈是你的地盤：踏進圈裡的敵人，主角會瞬間衝到他面前用真人功夫拳腳揍飛。<br>打倒敵人升級、挑技能、組元素，撐過一章又一章。</p>
     <div class="stats">
       <span>最高分</span><span>${save.best}</span>
       <span>最遠進度</span><span>第 ${save.bestChapter || 1} 章 第 ${save.bestWave} 波</span>
