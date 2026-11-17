@@ -153,7 +153,7 @@ def yaw_to_x(d):
     return math.atan2(d[2], d[0])
 
 
-def make_clip(tk, a, b, yaw, impact=None, keep_move=0.3, ref=None, inplace=False):
+def make_clip(tk, a, b, yaw, impact=None, keep_move=0.3, ref=None, inplace=False, ground_all=False):
     """裁切 [a, b)，旋轉讓方向朝 +X，降頻，回傳 dict"""
     step = max(1, round(tk.fps / OUT_FPS))
     sel = np.arange(a, b, step)
@@ -175,7 +175,12 @@ def make_clip(tk, a, b, yaw, impact=None, keep_move=0.3, ref=None, inplace=False
     # 讓片段中最低的腳剛好踩在地面
     feet = [tk.idx[n] for n in ('LeftToeBase', 'RightToeBase', 'LeftFoot', 'RightFoot')]
     ground = tk.wp[sel][:, feet, 1].min()
-    rel[:, 1] -= ground - 0.6
+    if ground_all:
+        # 倒地動作：用全身最低點（躺下時是背或頭）貼地
+        ground = tk.wp[sel][:, :, 1].min()
+        rel[:, 1] -= ground - 1.2
+    else:
+        rel[:, 1] -= ground - 0.6
     # 換算到共用骨架的大小
     rel *= SKEL_LEG / tk.leg
     keepj = [k for k, j in enumerate(tk.joints) if j['name'] not in KEEP_DROP]
@@ -217,7 +222,7 @@ def best_loop(tk, lo, hi, lmin, lmax, cond=None):
 def main():
     src = pathlib.Path(sys.argv[1])
     out = pathlib.Path(sys.argv[2]) if len(sys.argv) > 2 else pathlib.Path(__file__).resolve().parents[2] / 'js' / 'mocap.js'
-    T = {n: Take(src / f'{n}.bvh') for n in ['135_04', '135_07', '135_09', '135_11', '14_01', '07_01', '141_01', '90_05']}
+    T = {n: Take(src / f'{n}.bvh') for n in ['135_04', '135_07', '135_09', '135_11', '14_01', '07_01', '141_01', '90_05', '90_18', '90_16', '91_59']}
     base = T['135_09']
     global SKEL_LEG
     SKEL_LEG = base.leg
@@ -290,6 +295,22 @@ def main():
         assert abs(math.degrees(math.atan2(chk[2], chk[0]))) < 1
         clips[name] = make_clip(tk, s, e, yaw, inplace=True)
         print(name, s / tk.fps, e / tk.fps, '首尾差', round(d, 3))
+
+    # 受擊反應與倒地：把「被推出去的方向」轉成 -X（遠離面前的攻擊者）
+    def react(key, name, t0, t1, keep, ground_all, part='Hips'):
+        tk = T[key]
+        a, b = int(t0 * tk.fps), int(t1 * tk.fps)
+        d = tk.P(part)[b] - tk.P(part)[a]
+        d[1] = 0
+        yaw = yaw_to_x(-d)
+        chk = qrot(qaxis('Y', np.array(yaw)), -d)
+        assert abs(math.degrees(math.atan2(chk[2], chk[0]))) < 1
+        clips[name] = make_clip(tk, a, b, yaw, keep_move=keep, ref=a, ground_all=ground_all)
+        print(name, t0, t1, '位移', round(float(np.linalg.norm(d)), 1))
+    react('91_59', 'hit0', 0.55, 1.5, 0.6, False)
+    react('91_59', 'hit1', 0.55, 1.05, 0.6, False)
+    react('90_18', 'fallB0', 0.6, 2.2, 0.5, True, part='Head')
+    react('90_16', 'fallF0', 3.25, 4.7, 0.5, True, part='Head')
 
     keepj = [k for k, j in enumerate(base.joints) if j['name'] not in KEEP_DROP]
     remap = {old: new for new, old in enumerate(keepj)}

@@ -53,8 +53,9 @@ R3D.init = (canvas, cfg) => {
   scene.fog = new THREE.Fog('#0a0910', 900, 1900);
   camera = new THREE.PerspectiveCamera(FOV, 1, 10, 4000);
 
-  scene.add(new THREE.HemisphereLight(0xc8d8ff, 0x1a1424, 0.5));
-  dirLight = new THREE.DirectionalLight(0xffffff, 0.95);
+  scene.add(new THREE.HemisphereLight(0xd8e4ff, 0x2a2238, 0.62));
+  scene.add(new THREE.AmbientLight(0x404058, 0.25));
+  dirLight = new THREE.DirectionalLight(0xfff4e6, 0.8);
   dirLight.position.set(-220, 600, 260);
   dirLight.castShadow = true;
   dirLight.shadow.mapSize.set(2048, 2048);
@@ -64,21 +65,71 @@ R3D.init = (canvas, cfg) => {
   dirLight.shadow.bias = -0.0008;
   scene.add(dirLight);
   // 擂台頂上的聚光
-  const spot = new THREE.SpotLight(0xfff1d6, 0.55, 1600, 0.6, 0.6);
+  const spot = new THREE.SpotLight(0xfff1d6, 0.45, 1800, 0.55, 0.6);
   spot.position.set(0, 900, 0);
   scene.add(spot);
+  // 兩側彩色輪廓光：青色、洋紅
+  const rimA = new THREE.PointLight(0x3fe0c5, 0.9, 1400, 1.2);
+  rimA.position.set(-ARENA * 1.2, 260, -ARENA * 0.8);
+  const rimB = new THREE.PointLight(0xff4fd8, 0.75, 1400, 1.2);
+  rimB.position.set(ARENA * 1.2, 260, ARENA * 0.6);
+  scene.add(rimA); scene.add(rimB);
 
+  setupComposer();
   buildGeometries();
   buildRigGeometries();
   buildArena();
+  buildStadiumLights();
   buildPlayer();
   buildFx();
 };
 
+// 發光後處理（UnrealBloom）。效能不足時自動關閉，也可在暫停選單切換。
+let composer = null, bloomPass = null, lastDpr = 1;
+R3D.quality = 'high';
+function setupComposer() {
+  if (!THREE.EffectComposer || !THREE.UnrealBloomPass) { R3D.quality = 'low'; return; }
+  composer = new THREE.EffectComposer(renderer);
+  composer.addPass(new THREE.RenderPass(scene, camera));
+  bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(256, 256), 0.7, 0.35, 0.97);
+  composer.addPass(bloomPass);
+  composer.addPass(new THREE.ShaderPass(THREE.GammaCorrectionShader));
+  applyQuality();
+}
+function applyQuality() {
+  const high = R3D.quality === 'high' && composer;
+  renderer.outputEncoding = high ? THREE.LinearEncoding : THREE.sRGBEncoding;
+  renderer.setPixelRatio(high ? Math.min(1.5, lastDpr) : Math.min(2, lastDpr));
+  renderer.setSize(SW, SH, false);
+  if (composer) {
+    composer.setPixelRatio(Math.min(1.5, lastDpr));
+    composer.setSize(SW, SH);
+    bloomPass.resolution.set(SW / 2, SH / 2);
+  }
+}
+R3D.setQuality = (q, manual) => {
+  R3D.quality = composer ? q : 'low';
+  if (manual) R3D.manualQuality = true;
+  applyQuality();
+};
+// 前幾秒量畫面速度，太慢就自動降低特效
+let perfFrames = 0, perfTime = 0;
+function watchPerf(rdt) {
+  if (R3D.manualQuality || R3D.quality !== 'high' || perfFrames < 0) return;
+  if (rdt <= 0) return;
+  perfFrames++; perfTime += rdt;
+  if (perfFrames >= 120) {
+    if (perfTime / perfFrames > 1 / 38) R3D.setQuality('low');
+    perfFrames = -1;
+  }
+}
+
 R3D.resize = (w, h, dpr) => {
   SW = w; SH = h;
+  lastDpr = dpr || 1;
   renderer.setPixelRatio(Math.min(2, dpr || 1));
   renderer.setSize(w, h, false);
+  applyQuality();
   camera.aspect = w / h;
   // 讓整個擂台塞進畫面（上下保留介面空間）
   const v = THREE.MathUtils.degToRad(FOV) / 2;
@@ -232,6 +283,25 @@ function buildArena() {
   }
   crowd.count = k;
   scene.add(crowd);
+}
+
+function buildStadiumLights() {
+  const coneMat = new THREE.MeshBasicMaterial({ color: '#c9d4ff', transparent: true, opacity: 0.018, depthWrite: false, side: THREE.FrontSide, blending: THREE.AdditiveBlending });
+  const bulbMat = new THREE.MeshBasicMaterial({ color: '#fff8e8' });
+  for (let i = 0; i < 4; i++) {
+    const a = Math.PI / 4 + i * Math.PI / 2;
+    const top = new THREE.Vector3(Math.cos(a) * (ARENA + 260), 620, Math.sin(a) * (ARENA + 260));
+    const target = new THREE.Vector3(Math.cos(a) * ARENA * 0.15, 0, Math.sin(a) * ARENA * 0.15);
+    const len = top.distanceTo(target);
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(ARENA * 0.4, len, 24, 1, true), coneMat);
+    cone.position.copy(top).lerp(target, 0.5);
+    cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), target.clone().sub(top).normalize());
+    scene.add(cone);
+    const bulb = new THREE.Mesh(GEO.unitSphere, bulbMat);
+    bulb.scale.setScalar(16);
+    bulb.position.copy(top);
+    scene.add(bulb);
+  }
 }
 
 function updateCrowd(t, hype) {
@@ -511,6 +581,8 @@ function getEnemyMesh(e) {
   a.cur = null; a.prev = null; a.hold = false;
   play(a, 'walk', { t: Math.random() * clipLen('walk'), fade: 0 });
   g.userData.attackClip = null;
+  g.userData.reacting = false; g.userData.attacking = false;
+  g.userData.lastHitN = e.hitN || 0;
   enemyMap.set(e, g);
   return g;
 }
@@ -539,12 +611,24 @@ function updateEnemy(e, g, t, dt) {
   const wind = e.state === 'wind';
   // 動作選擇
   a.hold = frozen;
-  if (e.lunge > 0 && !u.attacking) {
+  // 被打中：播放真人踉蹌（打斷攻擊）
+  if ((e.hitN || 0) !== (u.lastHitN || 0)) {
+    u.lastHitN = e.hitN || 0;
+    if (!frozen && !e.T.boss) {
+      u.reacting = true; u.attacking = false;
+      play(a, Math.random() < 0.5 ? 'hit0' : 'hit1', { loop: false, speed: 1.5, fade: 0.04, restart: true });
+    } else if (e.T.boss) {
+      u.reacting = true;
+      play(a, 'hit1', { loop: false, speed: 2, fade: 0.05, restart: true, t: 0.1 });
+    }
+  }
+  if (u.reacting && (animDone(g) || a.t > clipLen(a.cur) * 0.8)) u.reacting = false;
+  if (e.lunge > 0 && !u.attacking && !u.reacting) {
     u.attacking = true;
     play(a, pick(CLIPS_BY.boxR.concat(CLIPS_BY.boxL)), { loop: false, speed: 1.6, fade: 0.06, t: 0.05 });
   }
   if (u.attacking && animDone(g)) u.attacking = false;
-  if (!u.attacking && !frozen) {
+  if (!u.attacking && !u.reacting && !frozen) {
     if (e.state === 'dash') play(a, 'run', { speed: 2.2 });
     else if (near || knocked || e.stun > 0 || wind) play(a, 'idle', { speed: wind ? 0.3 : 1.1 });
     else if (e.type === 'runner' || e.type === 'goldie') play(a, 'run', { speed: (e.speed / 110) * 1.1 });
@@ -552,7 +636,7 @@ function updateEnemy(e, g, t, dt) {
   }
   stepAnim(g, dt);
   // 受擊後仰（以腳為支點）
-  u.lean.rotation.z = hitK * 0.55 + (e.stun > 0 ? 0.12 : 0) - (wind ? 0.25 : 0);
+  u.lean.rotation.z = (u.reacting ? 0 : hitK * 0.3) - (wind ? 0.25 : 0);
   if (e.squash > 0) { const q = e.squash / 0.12; g.scale.set(S * (1 + 0.12 * q), S * (1 - 0.15 * q), S * (1 + 0.12 * q)); }
   setRigLook(g, { frozen, burn: !!e.burn, flash: e.flash > 0 || (wind && Math.floor(t * 16) % 2 === 0) });
   if (u.fuse) u.fuse.material.color.set(Math.floor(t * 12) % 2 ? '#ffe14a' : '#ff5a1f');
@@ -595,55 +679,41 @@ function updateEnemy(e, g, t, dt) {
   } else if (u.warn) { u.warn.visible = false; u.warnStrip.visible = false; }
 }
 
-// 被揍飛的身體：保留被打中那一刻的姿勢，四肢甩動、空中翻滾、倒地
+// 被打倒：沿著被打飛的軌跡，播放真人往後摔倒（或往前撲倒），最後躺在地上
 const bodyMap = new Map();
 const bodyPool = [];
-const tmpQ2 = new THREE.Quaternion();
-const FLAIL = ['LeftArm', 'RightArm', 'LeftUpLeg', 'RightUpLeg', 'Spine1', 'Neck'].map(n => JI[n]);
+const AX_X = new THREE.Vector3(1, 0, 0), AX_Z = new THREE.Vector3(0, 0, 1);
 function updateBodies(bodies, dt) {
   const alive = new Set(bodies);
   for (const [b, g] of bodyMap) if (!alive.has(b)) { g.visible = false; bodyMap.delete(b); bodyPool.push(g); }
   for (const b of bodies) {
     let g = bodyMap.get(b);
-    const u0 = g && g.userData;
     if (!g) {
       g = bodyPool.pop() || createRig(GRAY_LOOK);
       g.visible = true;
       bodyMap.set(b, g);
       const u = g.userData;
       u.dir = Math.atan2(b.vy, b.vx);
-      u.flail = Math.random() * 10;
-      // 從一個出招片段隨機抓一格當作被打飛的姿勢
       const a = u.anim;
-      a.cur = null; a.prev = null;
-      play(a, pick(['idle', 'walk', 'run']), { t: Math.random(), fade: 0 });
-      a.hold = true;
-      stepAnim(g, 0);
-      u.base = u.bones.map(bn => bn.quaternion.clone());
+      a.cur = null; a.prev = null; a.hold = false;
+      const fwd = Math.random() < 0.25;
+      play(a, fwd ? 'fallF0' : 'fallB0', { loop: false, speed: 1.45, t: fwd ? 0.05 : 0.12, fade: 0 });
+      // 片段的「摔出去方向」是 -X：轉到被打飛的方向
+      u.yawOff = Math.PI;
+      u.spin = Math.abs(b.vz) > 330 && Math.random() < 0.5 ? (Math.random() < 0.5 ? -1 : 1) : 0;
+      u.lean.rotation.set(0, 0, 0);
     }
     const u = g.userData;
     const S = b.r * RIG_SCALE;
     g.scale.setScalar(S);
-    const airborne = b.z > 0.5;
-    u.flail += dt * 14;
-    // 四肢甩動
-    FLAIL.forEach((j, i) => {
-      tmpQ2.setFromAxisAngle(i % 2 ? AX_X : AX_Z, Math.sin(u.flail + i * 1.7) * (airborne ? 0.9 : 0.15));
-      u.bones[j].quaternion.copy(u.base[j]).multiply(tmpQ2);
-    });
-    g.rotation.set(0, -u.dir, 0);
-    if (airborne) {
-      g.position.set(b.x, b.z, b.y);
-      u.lean.rotation.set(0, 0, b.rot);        // 往後翻
-    } else {
-      g.position.set(b.x, 0, b.y);
-      u.lean.rotation.set(0, 0, Math.PI / 2);  // 仰躺
-      u.lean.position.y = S * 0.0;
-    }
+    stepAnim(g, dt);
+    g.rotation.set(0, -(u.dir - u.yawOff), 0);
+    g.position.set(b.x, Math.max(0, b.z), b.y);
+    // 打得特別重的會在空中多轉一圈
+    if (u.spin && b.z > 1) u.lean.rotation.y += u.spin * dt * 12;
     setRigLook(g, { opacity: Math.min(1, b.life / 0.6) });
   }
 }
-const AX_X = new THREE.Vector3(1, 0, 0), AX_Z = new THREE.Vector3(0, 0, 1);
 
 // ---------- 主角：真人功夫招式 ----------
 let player = null;
@@ -903,7 +973,7 @@ function buildFx() {
   pointCol = new Float32Array(MAX_POINTS * 3);
   geo.setAttribute('position', new THREE.BufferAttribute(pointPos, 3).setUsage(THREE.DynamicDrawUsage));
   geo.setAttribute('color', new THREE.BufferAttribute(pointCol, 3).setUsage(THREE.DynamicDrawUsage));
-  points = new THREE.Points(geo, new THREE.PointsMaterial({ size: 8, vertexColors: true, transparent: true, depthWrite: false, sizeAttenuation: true }));
+  points = new THREE.Points(geo, new THREE.PointsMaterial({ size: 11, map: softTex(), vertexColors: true, transparent: true, depthWrite: false, sizeAttenuation: true, blending: THREE.AdditiveBlending }));
   points.frustumCulled = false;
   scene.add(points);
   orbXp = new THREE.InstancedMesh(GEO.unitSphere, new THREE.MeshBasicMaterial({ color: '#5ef2a0' }), 400);
@@ -924,13 +994,20 @@ function getStarTex() {
   grad.addColorStop(0, 'rgba(255,255,255,1)');
   grad.addColorStop(0.25, 'rgba(255,255,255,0.9)');
   grad.addColorStop(1, 'rgba(255,255,255,0)');
+  // 柔光底 + 長短交錯的尖刺 + 亮核心
+  const glow = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  glow.addColorStop(0, 'rgba(255,255,255,0.9)'); glow.addColorStop(0.3, 'rgba(255,255,255,0.25)'); glow.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = glow; g.fillRect(0, 0, 128, 128);
   g.fillStyle = grad;
-  g.beginPath();
-  for (let i = 0; i < 16; i++) {
-    const a = i * Math.PI / 8, rr = i % 2 ? 22 : 64;
-    g.lineTo(64 + Math.cos(a) * rr, 64 + Math.sin(a) * rr);
+  for (let i = 0; i < 12; i++) {
+    const a = i * Math.PI / 6 + (i % 2) * 0.12, len = i % 3 === 0 ? 63 : (i % 2 ? 34 : 48), wd = i % 3 === 0 ? 0.09 : 0.13;
+    g.beginPath();
+    g.moveTo(64 + Math.cos(a - wd) * 8, 64 + Math.sin(a - wd) * 8);
+    g.lineTo(64 + Math.cos(a) * len, 64 + Math.sin(a) * len);
+    g.lineTo(64 + Math.cos(a + wd) * 8, 64 + Math.sin(a + wd) * 8);
+    g.closePath(); g.fill();
   }
-  g.closePath(); g.fill();
+  g.fillStyle = '#fff'; g.beginPath(); g.arc(64, 64, 10, 0, Math.PI * 2); g.fill();
   starTex = new THREE.CanvasTexture(c);
   return starTex;
 }
@@ -969,6 +1046,29 @@ const mkFlash = () => { const m = new THREE.Sprite(new THREE.SpriteMaterial({ ma
 const mkSmoke = () => { const m = new THREE.Sprite(new THREE.SpriteMaterial({ map: softTex(), color: '#9a8f86', transparent: true, depthWrite: false })); scene.add(m); return m; };
 const mkSline = () => { const m = new THREE.Mesh(GEO.box, new THREE.MeshBasicMaterial({ color: '#fff', transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })); scene.add(m); return m; };
 const mkDring = () => { const m = new THREE.Mesh(new THREE.RingGeometry(0.8, 1, 40), new THREE.MeshBasicMaterial({ color: '#fff', transparent: true, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending })); scene.add(m); return m; };
+const mkShard = () => { const m = new THREE.Mesh(GEO.box, new THREE.MeshBasicMaterial({ color: '#fff', transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })); scene.add(m); return m; };
+let crackTex = null;
+const mkCrack = () => {
+  if (!crackTex) {
+    const c = document.createElement('canvas');
+    c.width = c.height = 256;
+    const g = c.getContext('2d');
+    const gr = g.createRadialGradient(128, 128, 0, 128, 128, 128);
+    gr.addColorStop(0, 'rgba(0,0,0,0.55)'); gr.addColorStop(0.35, 'rgba(0,0,0,0.25)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 256, 256);
+    g.strokeStyle = 'rgba(10,8,8,0.9)'; g.lineCap = 'round';
+    for (let i = 0; i < 9; i++) {
+      let a = i / 9 * Math.PI * 2 + Math.random() * 0.4, x = 128, y = 128, w = 6;
+      g.beginPath(); g.moveTo(x, y);
+      for (let k = 0; k < 6; k++) { a += (Math.random() - 0.5) * 0.8; const l = 12 + Math.random() * 14; x += Math.cos(a) * l; y += Math.sin(a) * l; g.lineWidth = w; g.lineTo(x, y); w *= 0.75; }
+      g.stroke();
+    }
+    crackTex = new THREE.CanvasTexture(c);
+  }
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: crackTex, transparent: true, depthWrite: false }));
+  scene.add(m);
+  return m;
+};
 const mkSpike = () => {
   const m = new THREE.Mesh(GEO.cone, lambert('#bfefff', { emissive: 0x2a6f8f, transparent: true }));
   m.castShadow = true;
@@ -1016,7 +1116,8 @@ function syncFx(run, t) {
     const a = Math.max(0, f.life / f.max);
     pointPos[n * 3] = f.x; pointPos[n * 3 + 1] = f.z !== undefined ? f.z : 18 + (1 - a) * 14; pointPos[n * 3 + 2] = f.y;
     tmpColor.set(f.color);
-    pointCol[n * 3] = tmpColor.r * a + 0.1; pointCol[n * 3 + 1] = tmpColor.g * a + 0.05; pointCol[n * 3 + 2] = tmpColor.b * a;
+    const br = 1.3 * a;
+    pointCol[n * 3] = tmpColor.r * br; pointCol[n * 3 + 1] = tmpColor.g * br; pointCol[n * 3 + 2] = tmpColor.b * br;
     n++;
   }
   points.geometry.setDrawRange(0, n);
@@ -1054,6 +1155,21 @@ function syncFx(run, t) {
         sh.material.color.set(f.color);
         sh.material.opacity = a * 0.9;
       }
+    } else if (f.kind === 'shard') {
+      const m = take('shard', mkShard);
+      m.position.set(f.x, f.z, f.y);
+      tmpV.set(f.vx, f.vz, f.vy);
+      const sp = tmpV.length();
+      m.quaternion.setFromUnitVectors(AX_X, tmpV.normalize());
+      m.scale.set(Math.min(40, 8 + sp * 0.04) * a, 2.2, 2.2);
+      m.material.color.set(f.color);
+      m.material.opacity = Math.min(1, a * 1.5);
+    } else if (f.kind === 'crack') {
+      const m = take('crack', mkCrack);
+      m.position.set(f.x, 0.9, f.y);
+      m.rotation.set(-Math.PI / 2, 0, f.rot);
+      m.scale.setScalar(f.size * (1 + (1 - a) * 0.15));
+      m.material.opacity = Math.min(1, a * 2) * 0.8;
     } else if (f.kind === 'flash') {
       const m = take('flash', mkFlash);
       m.position.set(f.x, f.h, f.y);
@@ -1230,6 +1346,7 @@ R3D.render = (run, demo, t, shake) => {
     updateCrowd(t, 0.2);
   }
   endPools();
-  renderer.render(scene, camera);
+  if (R3D.quality === 'high' && composer) composer.render(); else renderer.render(scene, camera);
+  watchPerf(rdt);
 };
 })();

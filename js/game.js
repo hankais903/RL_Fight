@@ -345,6 +345,7 @@ function damageEnemy(e, amount, o = {}) {
   if (e.shield > 0) { const ab = Math.min(e.shield, a); e.shield -= ab; a -= ab; }
   e.hp -= a;
   e.flash = 0.08;
+  if (o.punch || a >= pDmg() * 1.5) { e.hitN = (e.hitN || 0) + 1; e.hitDir = o.dir; }
   if (o.kb) {
     const k = o.kb / e.T.mass;
     e.vx += Math.cos(o.dir) * k;
@@ -360,10 +361,15 @@ function damageEnemy(e, amount, o = {}) {
     const h = e.r * 2.2;
     const col = o.crit ? '#ffd23a' : ELEMENT_HIT();
     // 往出拳方向噴的火花
-    for (let i = 0; i < (o.crit ? 22 : 12); i++) {
+    for (let i = 0; i < (o.crit ? 16 : 9); i++) {
       const a = o.dir + rand(-0.55, 0.55), sp = rand(200, 560);
       run.fx.push({ kind: 'dot', x: hx, y: hy, z: h, vz: rand(-40, 260), vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, size: rand(3, 7), color: Math.random() < 0.6 ? col : '#ffffff', life: rand(0.18, 0.4), max: 0.4 });
     }
+    for (let i = 0; i < (o.crit ? 10 : 6); i++) {
+      const a = o.dir + rand(-0.7, 0.7), sp = rand(350, 750);
+      run.fx.push({ kind: 'shard', x: hx, y: hy, z: h, vz: rand(40, 320), vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, color: Math.random() < 0.5 ? col : '#fff4d0', life: rand(0.15, 0.3), max: 0.3 });
+    }
+    if (o.crit) run.fx.push({ kind: 'crack', x: e.x, y: e.y, rot: rand(0, Math.PI * 2), size: e.r * 3.2, life: 1.4, max: 1.4 });
     // 分層：白閃 → 星芒 → 速度線、貫穿震波 → 煙
     run.fx.push({ kind: 'flash', x: hx, y: hy, h, size: o.crit ? 1.8 : 1.1, life: 0.06, max: 0.06 });
     run.fx.push({ kind: 'impact', x: hx, y: hy, h, dir: o.dir, rot: rand(0, Math.PI * 2), size: o.crit ? 1.7 : 1, color: col, life: 0.16, max: 0.16 });
@@ -917,7 +923,7 @@ function lightningFx(x1, y1, x2, y2) {
 // 元素拳的命中顏色
 function ELEMENT_HIT() {
   const sk = run.skills;
-  return sk.firePunch ? '#ff9a3c' : sk.thunderPunch ? '#ffe14a' : sk.icePunch ? '#9be7ff' : '#ffffff';
+  return sk.firePunch ? '#ff9a3c' : sk.thunderPunch ? '#ffe14a' : sk.icePunch ? '#9be7ff' : '#ffd88a';
 }
 // 狀聲字
 const COMICS = [['砰！', '#ffd23a'], ['啪！', '#ffffff'], ['喝！', '#ff7a3c'], ['碰！', '#ffd23a'], ['哈！', '#ff9a3c']];
@@ -930,7 +936,7 @@ function addText(x, y, text, color, size) { run.texts.push({ x, y, text, color, 
 function updateFx(dt) {
   for (const f of run.fx) {
     f.life -= dt;
-    if (f.kind === 'dot') {
+    if (f.kind === 'dot' || f.kind === 'shard') {
       f.x += f.vx * dt; f.y += f.vy * dt; f.vx *= 0.92; f.vy *= 0.92;
       if (f.vz !== undefined) { f.z += f.vz * dt; f.vz -= (f.rise ? -60 : 700) * dt; if (f.z < 2) { f.z = 2; f.vz = 0; } }
     }
@@ -1233,6 +1239,7 @@ function pause() {
     <p class="small">${owned}<br>元素組合：${syn}</p>
     <div class="row">
       <button class="btn" data-act="resume">繼續</button>
+      <button class="btn alt" data-act="quality">特效：${R3D.quality === 'high' ? '高' : '低'}</button>
       <button class="btn alt" data-act="quit">放棄這局</button>
     </div>
   `);
@@ -1284,6 +1291,7 @@ overlay.addEventListener('click', ev => {
   else if (act === 'pick') pick(+el.dataset.i);
   else if (act === 'reroll') reroll();
   else if (act === 'resume') setState('play');
+  else if (act === 'quality') { R3D.setQuality(R3D.quality === 'high' ? 'low' : 'high', true); setState('play'); pause(); }
   else if (act === 'quit') gameOver();
   else if (act === 'nextChapter') nextChapter();
   else if (act === 'retreat') gameOver(true);

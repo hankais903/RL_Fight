@@ -36,6 +36,7 @@ js/render3d.js        3D 畫面（Three.js）：擂台、角色骨架與動畫�
 js/mocap.js           動作捕捉動畫資料（由 tools/mocap/extract.py 產生）
 tools/mocap/          動作捕捉轉換工具
 vendor/three.min.js   Three.js r128（MIT 授權），讓本機離線也能玩
+vendor/three-postfx.js Three.js r128 發光後處理（MIT 授權）
 tools/build_demo.py   打包成單一 HTML（試玩版）
 docs/                 參考遊戲系統分析
 ```
@@ -59,4 +60,4 @@ docs/                 參考遊戲系統分析
 python3 tools/mocap/extract.py <放 BVH 檔的資料夾>
 ```
 
-需要的 BVH 檔（從 https://github.com/una-dinosauria/cmu-mocap 的 `data/` 下載）：135_04、135_07、135_09、135_11、14_01、07_01、141_01、90_05。
+需要的 BVH 檔（從 https://github.com/una-dinosauria/cmu-mocap 的 `data/` 下載）：135_04、135_07、135_09、135_11、14_01、07_01、141_01、90_05、90_16、90_18、91_59。
