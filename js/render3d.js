@@ -735,7 +735,7 @@ function buildPlayer() {
   player.scale.setScalar(PLAYER_R * RIG_SCALE);
   u.shield = new THREE.Mesh(GEO.unitSphere, basic('#7cc8ff', { opacity: 0.22 }));
   scene.add(u.shield);
-  play(u.anim, 'idle', { fade: 0 });
+  play(u.anim, 'stance', { fade: 0 });
   u.seen = new WeakSet();
   u.strikeLimb = JI.RightHand;
   u.faceYaw = 0;
@@ -818,7 +818,7 @@ function updatePlayer(p, t, hurt, elements, dt, run) {
   }
   // 打中之後放慢收招；招式結束回到待機
   if (!a.loop && a.t > (u.impactClipT || 0)) a.speed = Math.max(1.1, (a.recover || 1) * 0.55);
-  if (!a.loop && animDone(player)) play(a, 'idle', { fade: 0.2 });
+  if (!a.loop && animDone(player)) play(a, 'stance', { fade: 0.18 });
   // 面向目標（平滑轉向）
   let dy = u.faceYaw - (u.yaw ?? u.faceYaw);
   dy = Math.atan2(Math.sin(dy), Math.cos(dy));

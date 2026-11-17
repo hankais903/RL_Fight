@@ -219,6 +219,101 @@ def best_loop(tk, lo, hi, lmin, lmax, cond=None):
     return best, bs
 
 
+# ---------- 合成：格鬥遊戲式的備戰架式（上下彈動、可循環） ----------
+def qinv(q): return q * np.array([1, -1, -1, -1])
+
+def qfromto(a, b):
+    a = a / np.linalg.norm(a); b = b / np.linalg.norm(b)
+    c = np.cross(a, b); d = float(np.dot(a, b))
+    if d < -0.9999: return np.array([0.0, 1, 0, 0])
+    q = np.array([1 + d, *c]); return q / np.linalg.norm(q)
+
+def qaxis1(axis_vec, ang):
+    v = axis_vec / np.linalg.norm(axis_vec)
+    return np.array([math.cos(ang / 2), *(v * math.sin(ang / 2))])
+
+class Synth:
+    """讓合成出來的片段可以直接丟進 make_clip"""
+    def __init__(self, base, q, root):
+        self.joints, self.idx, self.leg = base.joints, base.idx, base.leg
+        self.fps = OUT_FPS
+        self.q, self.root = q, root
+        self.wp, _ = fk(self.joints, q, root)
+
+def world_rotate(joints, q, root, j, R):
+    """把關節 j 在世界座標再轉 R（子關節跟著動）"""
+    _, wq = fk(joints, q[None], root[None])
+    wq = wq[0]
+    p = joints[j]['parent']
+    q[j] = qmul(qinv(wq[p]), qmul(R, wq[j]))
+
+def ik_leg(tk, q, root, side, target):
+    """雙骨 IK：調整大腿、小腿，讓腳踝回到 target，腳掌方向不變"""
+    J = tk.joints; ix = tk.idx
+    iU, iL, iF = ix[side + 'UpLeg'], ix[side + 'Leg'], ix[side + 'Foot']
+    iP = J[iU]['parent']
+    wp, wq = fk(J, q[None], root[None]); wp, wq = wp[0], wq[0]
+    H, K, A = wp[iU], wp[iL], wp[iF]
+    l1, l2 = np.linalg.norm(K - H), np.linalg.norm(A - K)
+    TH = target - H
+    d = np.clip(np.linalg.norm(TH), abs(l1 - l2) + 1e-3, l1 + l2 - 1e-3)
+    u = TH / np.linalg.norm(TH)
+    perp = (K - H) - np.dot(K - H, u) * u
+    perp /= np.linalg.norm(perp) + 1e-9
+    cosA = (l1 * l1 + d * d - l2 * l2) / (2 * l1 * d)
+    K2 = H + u * l1 * cosA + perp * l1 * math.sqrt(max(0, 1 - cosA * cosA))
+    q1 = qfromto(K - H, K2 - H)
+    WU = qmul(q1, wq[iU])
+    A1 = K2 + qrot(q1, A - K)
+    q2 = qfromto(A1 - K2, target - K2)
+    WL = qmul(q2, qmul(q1, wq[iL]))
+    q[iU] = qmul(qinv(wq[iP]), WU)
+    q[iL] = qmul(qinv(WU), WL)
+    q[iF] = qmul(qinv(WL), wq[iF])
+
+def make_stance(tk, f, n=22, drop=0.07, amp=0.09, arm_lower=0.7):
+    J, ix = tk.joints, tk.idx
+    q0, r0 = tk.q[f].copy(), tk.root[f].copy()
+    wp0 = tk.wp[f]
+    lat = wp0[ix['RightArm']] - wp0[ix['LeftArm']]; lat[1] = 0; lat /= np.linalg.norm(lat)
+    feet = {s: wp0[ix[s + 'Foot']].copy() for s in ('Left', 'Right')}
+    # 拳頭放低到胸口：找出讓手往下的旋轉方向
+    def hand_y(qq, side):
+        w, _ = fk(J, qq[None], r0[None]); return w[0][ix[side + 'Hand']][1]
+    signs = {}
+    for side in ('Left', 'Right'):
+        t = q0.copy(); world_rotate(J, t, r0, ix[side + 'Arm'], qaxis1(lat, 0.2))
+        signs[side] = 1 if hand_y(t, side) < hand_y(q0, side) else -1
+    sp_sign = 1
+    t = q0.copy(); world_rotate(J, t, r0, ix['Spine'], qaxis1(lat, 0.1))
+    w1, _ = fk(J, t[None], r0[None]); w0, _ = fk(J, q0[None], r0[None])
+    fwd = np.cross(lat, [0, 1, 0])
+    if np.dot(w1[0][ix['Head']] - w0[0][ix['Head']], fwd) < 0: sp_sign = -1
+    Q, Rt = [], []
+    for i in range(n):
+        ph = i / n * 2 * math.pi
+        bob = 0.5 - 0.5 * math.cos(ph)                     # 0→1→0
+        q = q0.copy()
+        r = r0.copy(); r[1] -= tk.leg * (drop + amp * bob)
+        # 上半身慢半拍：身體微微前傾、雙拳上下
+        lagb = 0.5 - 0.5 * math.cos(ph - 0.9)
+        world_rotate(J, q, r, ix['Spine'], qaxis1(lat, sp_sign * (0.06 + 0.05 * lagb)))
+        for side in ('Left', 'Right'):
+            world_rotate(J, q, r, ix[side + 'Arm'], qaxis1(lat, signs[side] * (arm_lower + 0.07 * lagb)))
+        for side in ('Left', 'Right'):
+            ik_leg(tk, q, r, side, feet[side])
+        Q.append(q); Rt.append(r)
+    syn = Synth(tk, np.array(Q), np.array(Rt))
+    # 檢查：腳的位置每一格都沒有滑動
+    slip = max(np.linalg.norm(syn.wp[:, ix[s + 'Foot']] - feet[s], axis=1).max() for s in ('Left', 'Right'))
+    assert slip < 0.05, f'腳滑動 {slip}'
+    # 朝向：後腳 → 前腳 的方向轉成 +X（側身，前拳對著敵人）
+    lf, rf = feet['Left'], feet['Right']
+    front, back = (lf, rf) if np.dot(lf - rf, fwd) > 0 else (rf, lf)
+    d = front - back; d[1] = 0
+    return syn, yaw_to_x(d)
+
+
 def main():
     src = pathlib.Path(sys.argv[1])
     out = pathlib.Path(sys.argv[2]) if len(sys.argv) > 2 else pathlib.Path(__file__).resolve().parents[2] / 'js' / 'mocap.js'
@@ -311,6 +406,12 @@ def main():
     react('91_59', 'hit1', 0.55, 1.05, 0.6, False)
     react('90_18', 'fallB0', 0.6, 2.2, 0.5, True, part='Head')
     react('90_16', 'fallF0', 3.25, 4.7, 0.5, True, part='Head')
+
+    # 主角待機：格鬥架式彈動
+    T['13_17'] = Take(src / '13_17.bvh')
+    syn, yaw = make_stance(T['13_17'], 3264)
+    clips['stance'] = make_clip(syn, 0, syn.q.shape[0], yaw, keep_move=0.0)
+    print('架式', syn.q.shape[0], '格')
 
     keepj = [k for k, j in enumerate(base.joints) if j['name'] not in KEEP_DROP]
     remap = {old: new for new, old in enumerate(keepj)}
