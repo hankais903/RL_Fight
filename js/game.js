@@ -312,9 +312,15 @@ function updatePlayer(dt) {
       if (md / left > 500 && Math.random() < 0.6) run.fx.push({ kind: 'smoke', x: p.x, y: p.y, h: 6, vx: -mx / md * 60, vy: -my / md * 60, size: 14, life: 0.35, max: 0.35 });
     }
     p.facing = Math.atan2(ty - p.y, tx - p.x);
-  } else if (!zone.length) {
+  } else {
+    // 攻擊完迅速退回原點（擂台中央），在下一招開始前回到位；臉仍朝著敵人，像往後跳開
     const d = Math.hypot(p.x, p.y);
-    if (d > 1) { const step = Math.min(d, 160 * dt); p.x -= p.x / d * step; p.y -= p.y / d * step; }
+    if (d > 0.5) {
+      const sp = zone.length ? Math.max(900, d / Math.max(0.05, p.punchT * 0.75)) : 700;
+      const step = Math.min(d, sp * dt);
+      p.x -= p.x / d * step; p.y -= p.y / d * step;
+      if (sp * dt > 6 && Math.random() < 0.5) run.fx.push({ kind: 'smoke', x: p.x, y: p.y, h: 5, vx: p.x / d * 40, vy: p.y / d * 40, size: 12, life: 0.3, max: 0.3 });
+    }
   }
   for (const pu of p.punches) {
     pu.t += dt;
@@ -340,6 +346,7 @@ function launchPunch(target, rate, finisher = false, extra = false) {
   const p = run.p;
   if (!extra) p.armSide = -p.armSide;
   if (!extra) p.facing = Math.atan2(target.y - p.y, target.x - p.x);
+  if (!extra) p.launchR = Math.hypot(p.x, p.y); // 測試用：出招時離中央的距離
   const dur = finisher ? Math.min(0.45, rate * 1.4) : Math.min(0.32, rate * 0.9);
   p.punches.push({ target, tx: target.x, ty: target.y, side: p.armSide, t: 0, dur, hitFrac: finisher ? 0.6 : 0.5, hit: false, finisher, extra });
   SFX.swing();
@@ -1490,8 +1497,9 @@ function drawHUD() {
     const a = Math.min(1, b.t / 0.3);
     const s = 1 + Math.max(0, b.t - (b.max - 0.2)) * 2.5;
     ctx.globalAlpha = a;
-    ctx.save(); ctx.translate(SW / 2, CY - ARENA * S * 0.45); ctx.scale(s, s);
-    outlineText(b.text, 0, 0, fs * 2.4, b.color, 'center');
+    // 提示字放在畫面上方（連擊數下面），不擋住擂台中間的主角
+    ctx.save(); ctx.translate(SW / 2, top + 135); ctx.scale(s, s);
+    outlineText(b.text, 0, 0, fs * 1.8, b.color, 'center');
     ctx.restore();
     ctx.globalAlpha = 1;
   }

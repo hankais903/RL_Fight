@@ -53,7 +53,7 @@ R3D.init = (canvas, cfg) => {
   scene.fog = new THREE.Fog('#0a0910', 900, 1900);
   camera = new THREE.PerspectiveCamera(FOV, 1, 10, 4000);
 
-  scene.add(new THREE.HemisphereLight(0xd8e4ff, 0x2a2238, 0.62));
+  scene.add(new THREE.HemisphereLight(0xd8e4ff, 0x2a2238, 0.7));
   scene.add(new THREE.AmbientLight(0x404058, 0.25));
   dirLight = new THREE.DirectionalLight(0xfff4e6, 0.8);
   dirLight.position.set(-220, 600, 260);
@@ -79,7 +79,6 @@ R3D.init = (canvas, cfg) => {
   buildGeometries();
   buildRigGeometries();
   buildArena();
-  buildStadiumLights();
   buildPlayer();
   buildFx();
   loadHeroModel();
