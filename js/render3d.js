@@ -1203,24 +1203,25 @@ function updatePlayer(p, t, hurt, elements, dt, run) {
     if (k > -0.12 && k < 0) { const q = 1 + k / 0.12; sx = 1 - 0.06 * q; sy = 1 + 0.05 * q; }
     else if (k >= 0 && k < 0.14) { const q = 1 - k / 0.14; sx = 1 + (u.finisher ? 0.28 : 0.18) * q; sy = 1 - 0.1 * q; }
     u.lean.scale.set(sx, sy, 1 / Math.sqrt(sx * sy));
-    // 落地緩衝：蹲一下
-    if (p.landT > 0) { const q = p.landT / 0.2; u.lean.scale.set(1 + 0.08 * q, 1 - 0.14 * q, 1 + 0.08 * q); }
   }
-  // 連段打完：後空翻回中央（以髖部為支點往後翻一圈，騰空走拋物線）
+  // 連段打完：真人動作捕捉的後空翻（蹲下蓄力 → 起跳 → 空中倒立 → 落地），動畫時間由翻回中央的進度驅動
   if (p.ret) {
     const k = Math.min(1, Math.max(0, p.ret.t) / p.ret.dur);
+    if (u.retRef !== p.ret) {
+      u.retRef = p.ret;
+      u.retClip = Math.random() < 0.5 ? 'flipB0' : 'flipB1';
+      play(a, u.retClip, { loop: false, fade: 0.08, restart: true });
+    }
     u.flight = null;
-    if (a.cur !== 'stance' && (a.loop || a.t >= (u.impactClipT || 0))) play(a, 'stance', { fade: 0.08 });
+    a.t = k * clipLen(u.retClip) * 0.999;
+    a.speed = 0;
+    stepAnim(player, 0);
     u.yaw = p.facing; u.faceYaw = p.facing;
     player.rotation.y = -p.facing;
-    const ang = Math.PI * 2 * smooth(k);
-    u.lean.quaternion.setFromAxisAngle(AX_Z, ang);
-    const piv = _v2.copy(u.bones[0].position);
-    u.lean.position.copy(piv).sub(piv.clone().applyQuaternion(u.lean.quaternion));
-    player.position.y += 55 * Math.sin(Math.PI * k);
-    // 翻轉時把腿收起來（縮短一點）
-    const tuck = Math.sin(Math.PI * k);
-    u.lean.scale.set(1 - 0.08 * tuck, 1 - 0.18 * tuck, 1 - 0.08 * tuck);
+    u.lean.quaternion.copy(QI); u.lean.position.set(0, 0, 0); u.lean.scale.set(1, 1, 1);
+  } else if (u.retRef) {
+    u.retRef = null;
+    play(a, 'stance', { fade: 0.15 });
   }
   retargetHero(elements, hurt);
   u.marker.position.set(player.position.x, 0, player.position.z);

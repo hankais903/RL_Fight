@@ -280,9 +280,11 @@ function updatePlayer(dt) {
   if (p.ret) {
     p.ret.t += dt;
     const k = Math.min(1, Math.max(0, p.ret.t) / p.ret.dur);
-    const e = k < 0.5 ? 2 * k * k : 1 - (-2 * k + 2) ** 2 / 2;
+    // 只在騰空那段（約 25%～75%）移回中央；蹲下蓄力和落地時站在原地
+    const m = Math.min(1, Math.max(0, (k - 0.25) / 0.5));
+    const e = m * m * (3 - 2 * m);
     if (p.ret.t >= 0) { p.x = p.ret.fx * (1 - e); p.y = p.ret.fy * (1 - e); }
-    if (k >= 1) { p.ret = null; p.landT = 0.2; p.punchT = Math.max(p.punchT, 0.12); }
+    if (k >= 1) { p.ret = null; p.punchT = Math.max(p.punchT, 0.1); }
   }
   if (p.landT > 0) p.landT -= dt;
   if (p.punchT <= 0 && !p.ret) {
@@ -351,7 +353,7 @@ function startReturn(delay = 0.12) {
   const d = Math.hypot(p.x, p.y);
   if (d < 10) return;
   p.facing = Math.atan2(p.y, p.x); // 背對中央，往後翻就是回中央
-  p.ret = { fx: p.x, fy: p.y, t: -delay, dur: 0.35 + Math.min(0.25, d / 600) };
+  p.ret = { fx: p.x, fy: p.y, t: -delay, dur: 0.75 };
   p.punchT = Math.max(p.punchT, p.ret.dur + delay);
 }
 

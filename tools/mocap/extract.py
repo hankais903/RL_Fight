@@ -517,6 +517,17 @@ def main():
     react('90_18', 'fallB0', 0.6, 2.2, 0.5, True, part='Head')
     react('90_16', 'fallF0', 3.25, 4.7, 0.5, True, part='Head')
 
+    # 後空翻（連段打完翻回中央用）：蹲下蓄力 → 起跳 → 空中倒立 → 落地站穩
+    # 翻轉的移動方向轉成 -X（往後），水平位移移除（由遊戲把主角移回中央），保留真實跳躍高度
+    for name, key, t0, t1 in [('flipB0', '87_04', 0.8, 1.6), ('flipB1', '87_03', 1.0, 1.85)]:
+        if key not in T: T[key] = Take(src / f'{key}.bvh')
+        tk = T[key]
+        a, b = int(t0 * tk.fps), int(t1 * tk.fps)
+        d = tk.P('Hips')[b] - tk.P('Hips')[a]; d[1] = 0
+        yaw = yaw_to_x(-d)
+        clips[name] = make_clip(tk, a, b, yaw, inplace=True)
+        print(name, key, t0, t1, '後退距離', round(float(np.linalg.norm(d)), 1))
+
     # 主角待機：格鬥架式彈動
     T['13_17'] = Take(src / '13_17.bvh')
     syn, yaw = make_stance(T['13_17'], 3264)
