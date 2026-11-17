@@ -276,7 +276,16 @@ function updatePlayer(dt) {
   const rate = p.rate * (tier >= 4 ? 0.75 : 1);
   // 只攻擊黃色圈（攻擊範圍，以擂台中心為圓心）裡的敵人
   const zone = zoneEnemies();
-  if (p.punchT <= 0) {
+  // 後空翻回中央（連段打完）
+  if (p.ret) {
+    p.ret.t += dt;
+    const k = Math.min(1, Math.max(0, p.ret.t) / p.ret.dur);
+    const e = k < 0.5 ? 2 * k * k : 1 - (-2 * k + 2) ** 2 / 2;
+    if (p.ret.t >= 0) { p.x = p.ret.fx * (1 - e); p.y = p.ret.fy * (1 - e); }
+    if (k >= 1) { p.ret = null; p.landT = 0.2; p.punchT = Math.max(p.punchT, 0.12); }
+  }
+  if (p.landT > 0) p.landT -= dt;
+  if (p.punchT <= 0 && !p.ret) {
     if (zone.length) {
       p.punchT = rate;
       p.strikeN = (p.strikeN || 0) + 1;
@@ -312,15 +321,9 @@ function updatePlayer(dt) {
       if (md / left > 500 && Math.random() < 0.6) run.fx.push({ kind: 'smoke', x: p.x, y: p.y, h: 6, vx: -mx / md * 60, vy: -my / md * 60, size: 14, life: 0.35, max: 0.35 });
     }
     p.facing = Math.atan2(ty - p.y, tx - p.x);
-  } else {
-    // 攻擊完迅速退回原點（擂台中央），在下一招開始前回到位；臉仍朝著敵人，像往後跳開
-    const d = Math.hypot(p.x, p.y);
-    if (d > 0.5) {
-      const sp = zone.length ? Math.max(900, d / Math.max(0.05, p.punchT * 0.75)) : 700;
-      const step = Math.min(d, sp * dt);
-      p.x -= p.x / d * step; p.y -= p.y / d * step;
-      if (sp * dt > 6 && Math.random() < 0.5) run.fx.push({ kind: 'smoke', x: p.x, y: p.y, h: 5, vx: p.x / d * 40, vy: p.y / d * 40, size: 12, life: 0.3, max: 0.3 });
-    }
+  } else if (!zone.length && !p.ret && !p.punches.length && Math.hypot(p.x, p.y) > 10) {
+    // 連段中斷（圈內暫時沒有敵人）：後空翻回中央
+    startReturn(0.05);
   }
   for (const pu of p.punches) {
     pu.t += dt;
@@ -342,6 +345,16 @@ function zoneEnemies() {
   return out.map(x => x[1]);
 }
 
+// 連段打完：面朝外、後空翻回到擂台中央
+function startReturn(delay = 0.12) {
+  const p = run.p;
+  const d = Math.hypot(p.x, p.y);
+  if (d < 10) return;
+  p.facing = Math.atan2(p.y, p.x); // 背對中央，往後翻就是回中央
+  p.ret = { fx: p.x, fy: p.y, t: -delay, dur: 0.35 + Math.min(0.25, d / 600) };
+  p.punchT = Math.max(p.punchT, p.ret.dur + delay);
+}
+
 function launchPunch(target, rate, finisher = false, extra = false) {
   const p = run.p;
   if (!extra) p.armSide = -p.armSide;
@@ -353,7 +366,7 @@ function launchPunch(target, rate, finisher = false, extra = false) {
 }
 
 function punchHit(e, pu) {
-  if (pu && pu.finisher) finisherBlast(e);
+  if (pu && pu.finisher) { finisherBlast(e); startReturn(0.15); }
   if (e.dead) return;
   if (e.bottle) {
     e.dead = true;

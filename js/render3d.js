@@ -1203,6 +1203,24 @@ function updatePlayer(p, t, hurt, elements, dt, run) {
     if (k > -0.12 && k < 0) { const q = 1 + k / 0.12; sx = 1 - 0.06 * q; sy = 1 + 0.05 * q; }
     else if (k >= 0 && k < 0.14) { const q = 1 - k / 0.14; sx = 1 + (u.finisher ? 0.28 : 0.18) * q; sy = 1 - 0.1 * q; }
     u.lean.scale.set(sx, sy, 1 / Math.sqrt(sx * sy));
+    // 落地緩衝：蹲一下
+    if (p.landT > 0) { const q = p.landT / 0.2; u.lean.scale.set(1 + 0.08 * q, 1 - 0.14 * q, 1 + 0.08 * q); }
+  }
+  // 連段打完：後空翻回中央（以髖部為支點往後翻一圈，騰空走拋物線）
+  if (p.ret) {
+    const k = Math.min(1, Math.max(0, p.ret.t) / p.ret.dur);
+    u.flight = null;
+    if (a.cur !== 'stance' && (a.loop || a.t >= (u.impactClipT || 0))) play(a, 'stance', { fade: 0.08 });
+    u.yaw = p.facing; u.faceYaw = p.facing;
+    player.rotation.y = -p.facing;
+    const ang = Math.PI * 2 * smooth(k);
+    u.lean.quaternion.setFromAxisAngle(AX_Z, ang);
+    const piv = _v2.copy(u.bones[0].position);
+    u.lean.position.copy(piv).sub(piv.clone().applyQuaternion(u.lean.quaternion));
+    player.position.y += 55 * Math.sin(Math.PI * k);
+    // 翻轉時把腿收起來（縮短一點）
+    const tuck = Math.sin(Math.PI * k);
+    u.lean.scale.set(1 - 0.08 * tuck, 1 - 0.18 * tuck, 1 - 0.08 * tuck);
   }
   retargetHero(elements, hurt);
   u.marker.position.set(player.position.x, 0, player.position.z);
