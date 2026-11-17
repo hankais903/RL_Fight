@@ -9,18 +9,13 @@ html = f"""<title>RL Fight</title>
 <style>
 :root {{ color-scheme: dark; }}
 {css}
-@media (orientation: portrait) and (max-width: 700px) {{
-  #rotateHint {{ display: block !important; }}
-}}
-#rotateHint {{ display: none; position: fixed; left: 0; right: 0; bottom: max(12px, env(safe-area-inset-bottom, 0px));
-  text-align: center; color: #9a9ab0; font-size: 13px; pointer-events: none; }}
 </style>
 <div id="stage">
   <canvas id="game"></canvas>
   <button id="pauseBtn" class="hidden" aria-label="暫停">❚❚</button>
+  <button id="ultBtn" class="hidden" aria-label="連擊爆發">爆發</button>
   <div id="overlay" class="hidden"></div>
 </div>
-<div id="rotateHint">📱 把手機轉成橫向，畫面會更大</div>
 <script>
 {data}
 </script>

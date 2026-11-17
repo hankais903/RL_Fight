@@ -5,12 +5,12 @@ html, body {
   user-select: none; -webkit-user-select: none; touch-action: none;
 }
 body { display: flex; align-items: center; justify-content: center; }
-#stage { position: relative; }
+#stage { position: relative; width: 100%; height: 100%; }
 #game { display: block; width: 100%; height: 100%; }
 .hidden { display: none !important; }
 
 #pauseBtn {
-  position: absolute; top: 4.2em; right: 1em; width: 2.4em; height: 2.4em;
+  position: absolute; top: 1.1em; right: .8em; width: 2.4em; height: 2.4em;
   border: 0; border-radius: .5em; background: rgba(255,255,255,.12); color: #fff;
   font-size: 1em; cursor: pointer;
 }
@@ -65,3 +65,26 @@ body { display: flex; align-items: center; justify-content: center; }
 .shop-item .btn { font-size: .95em; padding: .45em 1em; min-width: 7em; }
 .gold { color: #ffcf4a; font-weight: bold; }
 .small { font-size: .85em; }
+
+#ultBtn {
+  --fill: 0%;
+  position: absolute; left: 50%; bottom: max(14px, env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
+  width: 9em; height: 3.2em; border-radius: 1.6em; border: .15em solid #ff4fd8; cursor: pointer;
+  font: inherit; font-size: 1.05em; font-weight: 900; letter-spacing: .2em; color: #fff;
+  background: linear-gradient(90deg, rgba(255,79,216,.55) var(--fill), rgba(20,16,30,.8) var(--fill));
+  opacity: .75;
+}
+#ultBtn.ready { opacity: 1; animation: pulse .6s infinite alternate; box-shadow: 0 0 1.2em #ff4fd8; }
+@keyframes pulse { to { transform: translateX(-50%) scale(1.08); } }
+.card .tag { font-size: .75em; letter-spacing: .1em; color: #9a9ab0; }
+.card.fire { background: linear-gradient(#2e1a16, #1c1c2e); }
+.card.ice { background: linear-gradient(#16263a, #1c1c2e); }
+.card.lightning { background: linear-gradient(#262640, #1c1c2e); }
+#overlay { overflow-y: auto; }
+@media (max-width: 560px) {
+  .card { width: 100%; min-height: 0; display: grid; grid-template-columns: auto 1fr; column-gap: .9em; row-gap: .15em;
+    text-align: left; align-items: center; padding: .7em .9em; }
+  .card .icon { font-size: 2em; grid-row: span 3; }
+  .card .key, .card .tag { display: none; }
+  #overlay h1 { font-size: 2.6em; }
+}

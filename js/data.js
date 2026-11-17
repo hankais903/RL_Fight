@@ -1,70 +1,86 @@
-// ===== 遊戲資料：敵人、強化、永久強化 =====
+// ===== 遊戲資料：敵人、數值強化、技能說明、元素組合、道場 =====
 'use strict';
 
-// 敵人種類
-// hp: 血量, speed: 移動速度(px/s), dmg: 接觸傷害, r: 體型半徑, kbRes: 被擊退係數(越小越難推)
+// 敵人種類（數值為第 1 章第 1 波的基準，之後依章節與波次成長）
+// hp 血量 / speed 移動速度 / dmg 每次攻擊傷害 / r 體型 / mass 越重越難擊退
 const ENEMY_TYPES = {
-  grunt:   { name: '小混混', hp: 1, speed: 110, dmg: 1, r: 22, color: '#e0a458', score: 10,  gold: 1,  kbRes: 1 },
-  runner:  { name: '飛毛腿', hp: 1, speed: 215, dmg: 1, r: 18, color: '#e05858', score: 15,  gold: 1,  kbRes: 1 },
-  shield:  { name: '盾兵',   hp: 1, shield: 1, speed: 90, dmg: 1, r: 24, color: '#5aa0d8', score: 25, gold: 2, kbRes: 0.8 },
-  thrower: { name: '投擲手', hp: 1, speed: 100, dmg: 1, r: 20, color: '#58c08a', score: 25,  gold: 2,  kbRes: 1, range: 330, throwCd: 2.4 },
-  brute:   { name: '壯漢',   hp: 3, speed: 65,  dmg: 2, r: 32, color: '#8a6bd1', score: 30,  gold: 3,  kbRes: 0.55 },
-  bomber:  { name: '自爆客', hp: 1, speed: 135, dmg: 2, r: 20, color: '#3a3a44', score: 20,  gold: 2,  kbRes: 1 },
-  boss:    { name: '擂台霸主', hp: 25, speed: 45, dmg: 2, r: 56, color: '#c0392b', score: 500, gold: 30, kbRes: 0.15, boss: true },
+  grunt:   { name: '小嘍囉', hp: 5,   speed: 58,  dmg: 2,  r: 15, color: '#d9534f', xp: 1, gold: 1,  mass: 1 },
+  runner:  { name: '快腿仔', hp: 4,   speed: 112, dmg: 2,  r: 13, color: '#f0883e', xp: 1, gold: 1,  mass: 0.8 },
+  tank:    { name: '肉盾',   hp: 24,  speed: 36,  dmg: 6, r: 24, color: '#8e5bd1', xp: 4, gold: 3,  mass: 3 },
+  bomber:  { name: '炸彈客', hp: 5,   speed: 76,  dmg: 10, r: 15, color: '#44444f', xp: 2, gold: 2,  mass: 1, explode: true },
+  thrower: { name: '投擲手', hp: 8,   speed: 52,  dmg: 3,  r: 15, color: '#2fa36b', xp: 2, gold: 2,  mass: 1, ranged: { range: 230, cd: 2.6 } },
+  charger: { name: '蠻牛',   hp: 18,  speed: 46,  dmg: 6, r: 18, color: '#b5652f', xp: 3, gold: 2,  mass: 2, charge: true },
+  drummer: { name: '鼓手',   hp: 12,  speed: 42,  dmg: 2,  r: 16, color: '#3a7bd5', xp: 3, gold: 2,  mass: 1, buffer: true },
+  spore:   { name: '毒菇頭', hp: 10,  speed: 48,  dmg: 2,  r: 16, color: '#8fbf3a', xp: 2, gold: 2,  mass: 1, poison: true },
+  goldie:  { name: '錢袋鼠', hp: 14,  speed: 95,  dmg: 0,  r: 14, color: '#f2c230', xp: 3, gold: 20, mass: 1, flee: true },
+  // 每章第 10 波的頭目
+  boss_slam:   { name: '鐵拳大王', hp: 600, speed: 30, dmg: 10, r: 44, color: '#c0392b', xp: 40, gold: 60, mass: 25, boss: 'slam' },
+  boss_charge: { name: '暴走牛王', hp: 520, speed: 34, dmg: 12, r: 39, color: '#a0522d', xp: 40, gold: 60, mass: 25, boss: 'charge' },
+  boss_summon: { name: '幫派老大', hp: 560, speed: 26, dmg: 8, r: 41, color: '#6c3483', xp: 40, gold: 60, mass: 25, boss: 'summon' },
 };
+const BOSS_ORDER = ['boss_slam', 'boss_charge', 'boss_summon'];
 
-// 局內強化（每波結束三選一）
-// rarity: common / rare / epic, max: 可疊加次數, cond: 出現條件
-const UPGRADES = [
-  { id: 'iron_fist', icon: '👊', name: '鐵拳', rarity: 'rare', max: 5,
-    desc: '拳頭傷害 +1', apply: p => { p.dmg += 1; } },
-  { id: 'long_arm', icon: '💪', name: '長臂', rarity: 'common', max: 5,
-    desc: '出拳距離 +18', apply: p => { p.reach += 18; } },
-  { id: 'crit', icon: '🎯', name: '會心一擊', rarity: 'common', max: 5,
-    desc: '暴擊率 +12%', apply: p => { p.crit += 0.12; } },
-  { id: 'crit_dmg', icon: '💥', name: '致命打擊', rarity: 'rare', max: 3,
-    desc: '暴擊傷害倍率 +1', apply: p => { p.critMult += 1; } },
-  { id: 'double', icon: '✌️', name: '連打', rarity: 'rare', max: 4,
-    desc: '每拳有 20% 機率多打一下', apply: p => { p.doubleTap += 0.2; } },
-  { id: 'pierce', icon: '➰', name: '貫穿拳', rarity: 'rare', max: 3,
-    desc: '拳勁貫穿，額外擊中後方 1 名敵人', apply: p => { p.pierce += 1; } },
-  { id: 'vampire', icon: '🩸', name: '吸血拳', rarity: 'epic', max: 2,
-    desc: '每達成 20 連擊回復 1 點生命（第二級改為每 12 連擊）', apply: p => { p.vampire += 1; } },
-  { id: 'shock', icon: '🌊', name: '震地波', rarity: 'epic', max: 3,
-    desc: '暴擊時產生衝擊波，傷害周圍敵人', apply: p => { p.shockwave += 1; } },
-  { id: 'counter', icon: '🛡️', name: '反擊架勢', rarity: 'rare', max: 3,
-    desc: '受傷時震開並傷害周圍敵人', apply: p => { p.counter += 1; } },
-  { id: 'focus', icon: '🧘', name: '專注', rarity: 'common', max: 2,
-    desc: '揮空後的硬直時間 -40%', apply: p => { p.whiffCd *= 0.6; } },
-  { id: 'knock', icon: '🥊', name: '重拳', rarity: 'common', max: 3,
-    desc: '擊退距離大幅提升', apply: p => { p.kb += 130; } },
-  { id: 'tough', icon: '❤️', name: '鐵布衫', rarity: 'common', max: 5,
-    desc: '最大生命 +1，並回復 1 點', apply: p => { p.maxHp += 1; p.hp += 1; } },
-  { id: 'heal', icon: '🍙', name: '喘口氣', rarity: 'common', max: 99,
-    desc: '回復 2 點生命', cond: p => p.hp < p.maxHp, apply: p => { p.hp = Math.min(p.maxHp, p.hp + 2); } },
-  { id: 'greed', icon: '💰', name: '招財拳', rarity: 'common', max: 3,
-    desc: '金幣獲得量 +50%', apply: p => { p.greed += 0.5; } },
-  { id: 'frenzy', icon: '🔥', name: '狂熱', rarity: 'epic', max: 2,
-    desc: '連擊數達 15 以上時，傷害 +1', apply: p => { p.frenzy += 1; } },
-  { id: 'barrier', icon: '🔰', name: '護身氣', rarity: 'rare', max: 2,
-    desc: '每波開始獲得 1 層護盾，可抵擋一次傷害', apply: p => { p.barrierMax += 1; p.barrier += 1; } },
-  { id: 'speed', icon: '⚡', name: '快拳', rarity: 'common', max: 3,
-    desc: '出拳冷卻 -20%', apply: p => { p.punchCd *= 0.8; } },
+// 數值強化（升級三選一時出現）
+const STAT_UPGRADES = [
+  { id: 'dmg',      icon: '👊', name: '重拳',     max: 10, rarity: 'common', desc: '出拳傷害 +20%' },
+  { id: 'rate',     icon: '⚡', name: '快拳',     max: 8,  rarity: 'common', desc: '出拳速度 +12%' },
+  { id: 'range',    icon: '📏', name: '長臂',     max: 6,  rarity: 'common', desc: '出拳範圍 +18' },
+  { id: 'crit',     icon: '🎯', name: '會心',     max: 8,  rarity: 'common', desc: '暴擊率 +6%' },
+  { id: 'critDmg',  icon: '💥', name: '致命',     max: 6,  rarity: 'rare',   desc: '暴擊傷害 +30%' },
+  { id: 'maxHp',    icon: '❤️', name: '鐵布衫',   max: 8,  rarity: 'common', desc: '最大生命 +20，並回復 20' },
+  { id: 'regen',    icon: '💚', name: '調息',     max: 5,  rarity: 'common', desc: '每秒回復生命 +1' },
+  { id: 'lifesteal',icon: '🩸', name: '吸血拳',   max: 5,  rarity: 'rare',   desc: '造成傷害的 3% 轉為生命' },
+  { id: 'kb',       icon: '🌪️', name: '震退',     max: 4,  rarity: 'common', desc: '擊退距離 +35%' },
+  { id: 'xp',       icon: '📘', name: '悟性',     max: 5,  rarity: 'common', desc: '經驗獲得 +20%' },
+  { id: 'skillDmg', icon: '✨', name: '氣功',     max: 8,  rarity: 'common', desc: '技能傷害 +20%' },
+  { id: 'multi',    icon: '🤜', name: '多重拳',   max: 3,  rarity: 'epic',   desc: '每次出拳多打 1 個敵人' },
+  { id: 'heal',     icon: '🍗', name: '大吃一頓', max: 99, rarity: 'common', desc: '回復 40% 生命' },
 ];
 
-const RARITY_WEIGHT = { common: 60, rare: 30, epic: 10 };
+// 技能（自動施放或被動，最多 5 級）。element：fire 火 / ice 冰 / lightning 雷
+const SKILL_INFO = {
+  rocket:  { icon: '🚀', name: '火箭飛拳', desc: '定時朝最近的敵人射出貫穿的飛拳', up: '飛拳數量與傷害提升' },
+  quake:   { icon: '🌋', name: '震地拳',   desc: '定時捶地，震傷並擊退周圍敵人', up: '範圍與傷害提升' },
+  meteor:  { icon: '☄️', name: '天降鐵拳', desc: '巨大拳頭從天而降砸向敵人', up: '拳頭數量與傷害提升' },
+  orbit:   { icon: '🥊', name: '迴旋拳套', desc: '拳套環繞身邊，碰到敵人就打', up: '拳套數量與傷害提升' },
+  bounce:  { icon: '🔁', name: '彈射拳',   desc: '出拳後彈到附近另一個敵人', up: '彈射次數與傷害提升' },
+  firePunch:   { icon: '🔥', name: '烈焰拳',   element: 'fire',      desc: '出拳使敵人燃燒，持續受傷', up: '燃燒傷害提升' },
+  fireZone:    { icon: '♨️', name: '烈焰陣',   element: 'fire',      desc: '在敵人最密集處燃起火陣', up: '範圍、時間與傷害提升' },
+  icePunch:    { icon: '🧊', name: '寒霜拳',   element: 'ice',       desc: '出拳使敵人減速，有機率冰凍', up: '冰凍機率提升' },
+  frostNova:   { icon: '❄️', name: '冰霜爆發', element: 'ice',       desc: '定時冰凍周圍所有敵人', up: '範圍與冰凍時間提升' },
+  thunderPunch:{ icon: '⚡', name: '雷電拳',   element: 'lightning', desc: '出拳有機率放出閃電打附近敵人', up: '觸發機率提升' },
+  chain:       { icon: '🌩️', name: '雷霆鏈',   element: 'lightning', desc: '定時放出在敵人間跳躍的閃電', up: '跳躍次數與傷害提升' },
+};
+const SKILL_MAX = 5;
+
+// 元素組合強化（擁有對應元素技能時才會出現）
+const SYNERGIES = [
+  { id: 'burnLong',  icon: '🔥', name: '餘燼',     req: ['fire'],             desc: '燃燒時間 +60%' },
+  { id: 'fuel',      icon: '🛢️', name: '火上加油', req: ['fire'],             desc: '燃燒中的敵人受到傷害 +30%' },
+  { id: 'combust',   icon: '💣', name: '爆燃',     req: ['fire'],             desc: '燃燒中的敵人倒下時爆炸' },
+  { id: 'freezeLong',icon: '🧊', name: '永凍',     req: ['ice'],              desc: '冰凍與減速時間 +60%' },
+  { id: 'shatter',   icon: '💎', name: '碎冰',     req: ['ice'],              desc: '打中冰凍的敵人必定暴擊' },
+  { id: 'frostbite', icon: '🥶', name: '凍傷',     req: ['ice'],              desc: '減速中的敵人受到傷害 +25%' },
+  { id: 'arc',       icon: '➰', name: '感電跳躍', req: ['lightning'],        desc: '閃電多跳 2 個敵人' },
+  { id: 'overload',  icon: '🔋', name: '超載',     req: ['lightning'],        desc: '閃電傷害 +40%，且可以暴擊' },
+  { id: 'stormfire', icon: '🌋', name: '雷火',     req: ['fire', 'lightning'],desc: '閃電會點燃敵人' },
+  { id: 'frostfire', icon: '🌀', name: '霜火',     req: ['fire', 'ice'],      desc: '冰凍敵人時同時點燃' },
+  { id: 'supercond', icon: '🔷', name: '超導',     req: ['ice', 'lightning'], desc: '閃電對冰凍敵人造成雙倍傷害' },
+];
+
+const RARITY_WEIGHT = { common: 60, rare: 28, epic: 12 };
 const RARITY_NAME = { common: '普通', rare: '稀有', epic: '史詩' };
 
-// 永久強化（道場），用累積的金幣購買
+// 道場（永久強化，可以一直升級，價格逐級上漲）
 const META_UPGRADES = [
-  { id: 'vitality', name: '強健體魄', desc: '起始最大生命 +1', costs: [40, 100, 200],
-    apply: (p, lv) => { p.maxHp += lv; p.hp += lv; } },
-  { id: 'reach', name: '臂展訓練', desc: '起始出拳距離 +10', costs: [30, 80, 160],
-    apply: (p, lv) => { p.reach += 10 * lv; } },
-  { id: 'power', name: '眼明手快', desc: '起始暴擊率 +4%', costs: [50, 120, 240],
-    apply: (p, lv) => { p.crit += 0.04 * lv; } },
-  { id: 'reroll', name: '幸運星', desc: '每局可重抽強化 +1 次', costs: [60, 150],
-    apply: (p, lv, run) => { run.rerolls += lv; } },
-  { id: 'headstart', name: '起手式', desc: '開局先獲得一次強化三選一', costs: [120],
-    apply: (p, lv, run) => { run.headstart = lv > 0; } },
+  { id: 'atk',    name: '拳力訓練', desc: '出拳傷害 +8%',      base: 20, max: 50 },
+  { id: 'body',   name: '體能訓練', desc: '最大生命 +10',      base: 20, max: 50 },
+  { id: 'speed',  name: '手速訓練', desc: '出拳速度 +3%',      base: 30, max: 15 },
+  { id: 'reach',  name: '臂展訓練', desc: '出拳範圍 +5',       base: 30, max: 10 },
+  { id: 'eye',    name: '眼力訓練', desc: '暴擊率 +1%',        base: 25, max: 20 },
+  { id: 'luck',   name: '財運',     desc: '金幣獲得 +8%',      base: 25, max: 20 },
+  { id: 'reroll', name: '幸運星',   desc: '每局可重抽升級 +1 次', base: 80, max: 3 },
+  { id: 'slot',   name: '技能欄',   desc: '技能欄位 +1（起始 3 格）', base: 150, max: 2 },
+  { id: 'revive', name: '不屈',     desc: '每局可以復活 1 次', base: 200, max: 1 },
 ];
+function metaCost(m, lv) { return Math.round(m.base * Math.pow(1.35, lv)); }
