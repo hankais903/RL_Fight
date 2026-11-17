@@ -368,6 +368,7 @@ function updateEnemy(e, g, t) {
   g.position.set(e.x, Math.abs(step) * r * 0.12, e.y);
   g.rotation.y = -e.face;
   g.scale.setScalar(r * VIS);
+  if (e.squash > 0) { const q = e.squash / 0.12; g.scale.set(r * VIS * (1 + 0.3 * q), r * VIS * (1 - 0.35 * q), r * VIS * (1 + 0.3 * q)); }
   const u = g.userData;
   const lunge = e.lunge > 0 ? 0.6 : 0;
   u.fistL.position.x = 0.7 + step * 0.25 + lunge;
@@ -491,7 +492,7 @@ function getArm(i) {
   return armPool[i];
 }
 
-function updatePlayer(p, t, hurt) {
+function updatePlayer(p, t, hurt, elements) {
   const R = PLAYER_R * VIS;
   player.position.set(0, 0, 0);
   player.rotation.y = -p.facing;
@@ -500,16 +501,29 @@ function updatePlayer(p, t, hurt) {
   player.userData.tail.rotation.y = Math.sin(t * 9) * 0.4;
   const shoulderY = R * 1.0;
   const busy = { '-1': false, '1': false };
-  let ai = 0;
+  let ai = 0, lean = 0;
+  // 元素拳套顏色
+  const gm = player.userData.gloveMat;
+  const sk = elements || {};
+  if (sk.firePunch) { gm.color.set('#ff7a2a'); gm.emissive.set('#ff4400'); gm.emissiveIntensity = 0.5 + Math.random() * 0.3; }
+  else if (sk.thunderPunch) { gm.color.set('#ffe14a'); gm.emissive.set('#ffd000'); gm.emissiveIntensity = Math.random() < 0.3 ? 0.9 : 0.3; }
+  else if (sk.icePunch) { gm.color.set('#9be7ff'); gm.emissive.set('#3fb8ff'); gm.emissiveIntensity = 0.35; }
+  else { gm.color.set('#ff4d4d'); gm.emissive.set('#000000'); gm.emissiveIntensity = 0; }
   for (const pu of p.punches) {
     const k = pu.t / pu.dur;
-    const ext = k < 0.45 ? k / 0.45 : 1 - (k - 0.45) / 0.55;
+    // 快速打出 → 停住 → 收回
+    let ext;
+    if (k < 0.28) { const q = k / 0.28; ext = 1 - Math.pow(1 - q, 3); }
+    else if (k < 0.5) ext = 1;
+    else { const q = (k - 0.5) / 0.5; ext = 1 - q * q; }
+    const impact = k >= 0.28 && k < 0.5;
+    lean = Math.max(lean, ext);
     busy[pu.side] = true;
     const sa = p.facing + pu.side * Math.PI / 2;
     const sx = Math.cos(sa) * R * 0.7, sz = Math.sin(sa) * R * 0.7;
     const tgtY = pu.target && pu.target.r ? pu.target.r * VIS * 1.1 : R;
     const gx = sx + (pu.tx - sx) * ext, gz = sz + (pu.ty - sz) * ext;
-    const gy = shoulderY + (tgtY - shoulderY) * ext + Math.sin(ext * Math.PI) * 10;
+    const gy = shoulderY + (tgtY - shoulderY) * ext;
     const { arm, glove } = getArm(ai++);
     arm.visible = glove.visible = true;
     const from = tmpV.set(sx, shoulderY, sz);
@@ -517,11 +531,15 @@ function updatePlayer(p, t, hurt) {
     const len = dir.length();
     arm.position.set((sx + gx) / 2, (shoulderY + gy) / 2, (sz + gz) / 2);
     arm.quaternion.setFromUnitVectors(UP, dir.normalize());
-    arm.scale.set(R * 0.17, Math.max(1, len), R * 0.17);
+    arm.scale.set(R * 0.2, Math.max(1, len), R * 0.2);
     glove.position.set(gx, gy, gz);
-    glove.scale.setScalar(R * (0.48 + ext * 0.12));
+    glove.scale.setScalar(R * (impact ? 0.72 : 0.52));
   }
   for (let i = ai; i < armPool.length; i++) { armPool[i].arm.visible = false; armPool[i].glove.visible = false; }
+  // 出拳時身體往前送
+  player.position.set(Math.cos(p.facing) * lean * 5, 0, Math.sin(p.facing) * lean * 5);
+  player.rotation.z = 0;
+  player.rotation.x = 0;
   const sides = [-1, 1];
   player.userData.idleGloves.forEach((m, i) => {
     const side = sides[i];
@@ -566,7 +584,7 @@ function buildFx() {
   pointCol = new Float32Array(MAX_POINTS * 3);
   geo.setAttribute('position', new THREE.BufferAttribute(pointPos, 3).setUsage(THREE.DynamicDrawUsage));
   geo.setAttribute('color', new THREE.BufferAttribute(pointCol, 3).setUsage(THREE.DynamicDrawUsage));
-  points = new THREE.Points(geo, new THREE.PointsMaterial({ size: 6, vertexColors: true, transparent: true, depthWrite: false, sizeAttenuation: true }));
+  points = new THREE.Points(geo, new THREE.PointsMaterial({ size: 8, vertexColors: true, transparent: true, depthWrite: false, sizeAttenuation: true }));
   points.frustumCulled = false;
   scene.add(points);
   orbXp = new THREE.InstancedMesh(GEO.unitSphere, new THREE.MeshBasicMaterial({ color: '#5ef2a0' }), 400);
@@ -577,6 +595,37 @@ function buildFx() {
   scene.add(orbXp); scene.add(orbGold);
 }
 
+let starTex = null;
+function getStarTex() {
+  if (starTex) return starTex;
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.25, 'rgba(255,255,255,0.9)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad;
+  g.beginPath();
+  for (let i = 0; i < 16; i++) {
+    const a = i * Math.PI / 8, rr = i % 2 ? 22 : 64;
+    g.lineTo(64 + Math.cos(a) * rr, 64 + Math.sin(a) * rr);
+  }
+  g.closePath(); g.fill();
+  starTex = new THREE.CanvasTexture(c);
+  return starTex;
+}
+const mkImpact = () => {
+  const m = new THREE.Sprite(new THREE.SpriteMaterial({ map: getStarTex(), transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending }));
+  scene.add(m);
+  return m;
+};
+const mkSpike = () => {
+  const m = new THREE.Mesh(GEO.cone, lambert('#bfefff', { emissive: 0x2a6f8f, transparent: true }));
+  m.castShadow = true;
+  scene.add(m);
+  return m;
+};
 const mkRing = () => { const m = new THREE.Mesh(GEO.ring, basic('#fff')); m.rotation.x = -Math.PI / 2; scene.add(m); return m; };
 const mkDisc = () => { const m = new THREE.Mesh(GEO.disc, basic('#fff')); m.rotation.x = -Math.PI / 2; scene.add(m); return m; };
 const mkLine = () => {
@@ -591,7 +640,7 @@ const mkBolt = () => {
   // 閃電：用細長方塊串起來，比線條更明顯
   const grp = new THREE.Group();
   for (let i = 0; i < 7; i++) {
-    const s = new THREE.Mesh(GEO.box, new THREE.MeshBasicMaterial({ color: '#cfe6ff', transparent: true }));
+    const s = new THREE.Mesh(GEO.box, new THREE.MeshBasicMaterial({ color: '#dff0ff', transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
     grp.add(s);
   }
   scene.add(grp);
@@ -616,7 +665,7 @@ function syncFx(run, t) {
   for (const f of run.fx) {
     if (f.kind !== 'dot' || n >= MAX_POINTS) continue;
     const a = Math.max(0, f.life / f.max);
-    pointPos[n * 3] = f.x; pointPos[n * 3 + 1] = 18 + (1 - a) * 14; pointPos[n * 3 + 2] = f.y;
+    pointPos[n * 3] = f.x; pointPos[n * 3 + 1] = f.z !== undefined ? f.z : 18 + (1 - a) * 14; pointPos[n * 3 + 2] = f.y;
     tmpColor.set(f.color);
     pointCol[n * 3] = tmpColor.r * a + 0.1; pointCol[n * 3 + 1] = tmpColor.g * a + 0.05; pointCol[n * 3 + 2] = tmpColor.b * a;
     n++;
@@ -633,6 +682,29 @@ function syncFx(run, t) {
       m.scale.setScalar(Math.max(1, f.r));
       m.material.color.set(f.color);
       m.material.opacity = a * 0.85;
+    } else if (f.kind === 'impact') {
+      const m = take('impact', mkImpact);
+      const k = 1 - a;
+      m.position.set(f.x, f.h || 20, f.y);
+      m.scale.setScalar((44 + k * 40) * f.size);
+      m.material.color.set(f.color);
+      m.material.opacity = a;
+      m.material.rotation = f.x * 0.1;
+    } else if (f.kind === 'spikes') {
+      // 冰霜爆發：地上冒出一圈冰刺
+      const k = 1 - a;
+      const up = k < 0.2 ? k / 0.2 : (a < 0.3 ? a / 0.3 : 1);
+      const n = 18;
+      for (let i = 0; i < n; i++) {
+        const ang = i * Math.PI * 2 / n + (i % 2) * 0.15;
+        const d = f.r * (i % 2 ? 0.55 : 0.85);
+        const m = take('spike', mkSpike);
+        const h = (i % 2 ? 34 : 46) * up;
+        m.position.set(Math.cos(ang) * d, h / 2, Math.sin(ang) * d);
+        m.scale.set(9, Math.max(0.1, h), 9);
+        m.rotation.set(Math.sin(ang) * 0.25, 0, -Math.cos(ang) * 0.25);
+        m.material.opacity = Math.min(1, a * 3);
+      }
     } else if (f.kind === 'line') {
       const l = take('line', mkLine);
       const pa = l.geometry.attributes.position;
@@ -652,7 +724,7 @@ function syncFx(run, t) {
         const len = Math.hypot(dx, dz);
         s.position.set((p1[0] + p2[0]) / 2, 24, (p1[1] + p2[1]) / 2);
         s.rotation.set(0, -Math.atan2(dz, dx), 0);
-        s.scale.set(len, 3, 3);
+        s.scale.set(len + 3, 5, 5);
         s.material.opacity = a;
       }
     }
@@ -715,11 +787,18 @@ R3D.render = (run, demo, t, shake) => {
   beginPools();
   const p = run ? run.p : demo;
   // 鏡頭
-  const sx = shake ? (Math.random() * 2 - 1) * shake : 0, sz = shake ? (Math.random() * 2 - 1) * shake : 0;
-  camera.position.set(camTarget.x + sx, camTarget.y + Math.cos(TILT) * camDist, camTarget.z + Math.sin(TILT) * camDist + sz);
+  let sx = 0, sz = 0;
+  if (shake) {
+    const osc = Math.sin(t * 70) * shake;
+    const d = run ? run.shakeDir || 0 : 0;
+    sx = Math.cos(d) * osc + (Math.random() * 2 - 1) * shake * 0.3;
+    sz = Math.sin(d) * osc + (Math.random() * 2 - 1) * shake * 0.3;
+  }
+  const dist = camDist * (1 - (run ? run.zoom || 0 : 0));
+  camera.position.set(camTarget.x + sx, camTarget.y + Math.cos(TILT) * dist, camTarget.z + Math.sin(TILT) * dist + sz);
   camera.lookAt(camTarget.x + sx, camTarget.y, camTarget.z + sz);
 
-  updatePlayer(p, t, run && p.hurtT > 0);
+  updatePlayer(p, t, run && p.hurtT > 0, run && run.skills);
   rangeRing.visible = !!run;
   if (run) {
     rangeRing.scale.setScalar(p.range);

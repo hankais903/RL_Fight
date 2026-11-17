@@ -47,7 +47,7 @@ let save = loadSave();
 const metaLv = id => save.meta[id] || 0;
 
 // ---------- 音效 ----------
-let actx = null, muted = false, lastHitSound = 0;
+let actx = null, muted = false, lastHitSound = 0, lastSwing = 0;
 function ensureAudio() {
   if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { actx = null; } }
   if (actx && actx.state === 'suspended') actx.resume();
@@ -65,7 +65,7 @@ function tone(freq, dur, type = 'square', vol = 0.05, slide = 0, delay = 0) {
   o.start(t); o.stop(t + dur + 0.02);
 }
 let noiseBuf = null;
-function noise(dur, vol = 0.1) {
+function noise(dur, vol = 0.1, filter = 0, ftype = 'lowpass') {
   if (!actx || muted) return;
   if (!noiseBuf) {
     noiseBuf = actx.createBuffer(1, actx.sampleRate * 0.5, actx.sampleRate);
@@ -76,14 +76,29 @@ function noise(dur, vol = 0.1) {
   s.buffer = noiseBuf;
   g.gain.setValueAtTime(vol, t);
   g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  s.connect(g).connect(actx.destination);
+  if (filter) {
+    const f = actx.createBiquadFilter();
+    f.type = ftype; f.frequency.value = filter;
+    s.connect(f).connect(g).connect(actx.destination);
+  } else s.connect(g).connect(actx.destination);
   s.start(t); s.stop(t + dur);
 }
 const SFX = {
-  hit: () => { const n = performance.now(); if (n - lastHitSound < 45) return; lastHitSound = n; noise(0.05, 0.08); tone(150, 0.06, 'triangle', 0.07, -70); },
-  crit: () => { noise(0.1, 0.14); tone(90, 0.12, 'sawtooth', 0.07, -40); },
+  hit: () => {
+    const n = performance.now(); if (n - lastHitSound < 30) return; lastHitSound = n;
+    noise(0.09, 0.32, 900);            // 悶響
+    tone(120, 0.12, 'sine', 0.3, -80);  // 低頻「砰」
+    noise(0.03, 0.12, 3000, 'highpass'); // 皮革拍擊
+  },
+  crit: () => {
+    noise(0.16, 0.4, 700);
+    tone(95, 0.2, 'sine', 0.35, -60);
+    tone(1800, 0.06, 'square', 0.05, -1200);
+    noise(0.05, 0.2, 4000, 'highpass');
+  },
+  swing: () => { const n = performance.now(); if (n - lastSwing < 70) return; lastSwing = n; noise(0.08, 0.05, 1600, 'bandpass'); },
   hurt: () => { noise(0.15, 0.12); tone(110, 0.2, 'sawtooth', 0.07, -50); },
-  boom: () => { noise(0.3, 0.2); tone(70, 0.3, 'sine', 0.15, -40); },
+  boom: () => { noise(0.35, 0.35, 600); tone(60, 0.35, 'sine', 0.3, -30); },
   zap: () => tone(1400, 0.08, 'sawtooth', 0.03, -900),
   level: () => { tone(523, 0.1, 'square', 0.05); tone(659, 0.1, 'square', 0.05, 0, 0.08); tone(880, 0.18, 'square', 0.05, 0, 0.16); },
   pick: () => tone(660, 0.08, 'triangle', 0.05, 220),
@@ -143,7 +158,8 @@ function newRun() {
     enemies: [], projs: [], eprojs: [], fx: [], texts: [], bodies: [], zones: [], orbs: [], marks: [],
     skills: {}, stats: {}, syn: {}, rerolls: metaLv('reroll'),
     toSpawn: [], spawnT: 0, waveActive: false, waveDelay: 1.2, bossRef: null,
-    shake: 0, hitstop: 0, flash: 0, banner: null, pendingLevels: 0, choices: [],
+    shake: 0, shakeDir: 0, zoom: 0, hitstop: 0, flash: 0, banner: null, pendingLevels: 0, choices: [],
+    skillFlash: {}, castCount: {},
   };
 }
 
@@ -271,7 +287,7 @@ function updatePlayer(dt) {
   for (const pu of p.punches) {
     pu.t += dt;
     if (!pu.target.dead) { pu.tx = pu.target.x; pu.ty = pu.target.y; }
-    if (!pu.hit && pu.t >= pu.dur * 0.45) { pu.hit = true; punchHit(pu.target); }
+    if (!pu.hit && pu.t >= pu.dur * 0.28) { pu.hit = true; pu.impact = true; punchHit(pu.target); }
   }
   p.punches = p.punches.filter(pu => pu.t < pu.dur);
 }
@@ -280,7 +296,8 @@ function launchPunch(target, rate) {
   const p = run.p;
   p.armSide = -p.armSide;
   p.facing = Math.atan2(target.y, target.x);
-  p.punches.push({ target, tx: target.x, ty: target.y, side: p.armSide, t: 0, dur: Math.min(0.2, rate * 0.85), hit: false });
+  p.punches.push({ target, tx: target.x, ty: target.y, side: p.armSide, t: 0, dur: Math.min(0.17, rate * 0.8), hit: false });
+  SFX.swing();
 }
 
 function punchHit(e) {
@@ -298,7 +315,7 @@ function punchHit(e) {
   let crit = Math.random() < p.crit + (comboTier() >= 5 ? 0.15 : 0);
   if (e.freezeT > 0 && run.syn.shatter) crit = true;
   if (crit) dmg *= p.critDmg;
-  damageEnemy(e, dmg, { crit, dir, kb: 160 * p.kb, punch: true, show: true });
+  damageEnemy(e, dmg, { crit, dir, kb: 260 * p.kb, punch: true, show: true });
   // 被動技能
   if (run.skills.firePunch) applyBurn(e, pDmg() * (0.4 + 0.15 * skillLv('firePunch')), 2.5);
   if (run.skills.icePunch) {
@@ -338,12 +355,19 @@ function damageEnemy(e, amount, o = {}) {
   }
   if (run.p.lifesteal && a > 0) run.p.hp = Math.min(run.p.maxHp, run.p.hp + a * run.p.lifesteal);
   if (o.show || o.crit || a >= pDmg() * 3) {
-    if (run.texts.length < 70) addText(e.x + rand(-6, 6), e.y - e.r - 8, fmt(a), o.crit ? '#ffe14a' : '#ffffff', o.crit ? 22 : 15);
+    if (run.texts.length < 70) addText(e.x + rand(-6, 6), e.y, o.crit ? fmt(a) + '!' : fmt(a), o.crit ? '#ffd23a' : '#ffffff', o.crit ? 26 : 17);
   }
+  e.squash = 0.12;
   if (o.punch) {
-    spark(e.x - Math.cos(o.dir) * e.r, e.y - Math.sin(o.dir) * e.r, o.crit ? '#ffe14a' : '#ffffff', o.crit ? 10 : 5);
-    run.hitstop = Math.max(run.hitstop, o.crit ? 0.04 : 0.015);
-    run.shake = Math.max(run.shake, o.crit ? 5 : 2);
+    const hx = e.x - Math.cos(o.dir) * e.r, hy = e.y - Math.sin(o.dir) * e.r;
+    spark(hx, hy, o.crit ? '#ffe14a' : '#ffffff', o.crit ? 16 : 8);
+    run.fx.push({ kind: 'impact', x: hx, y: hy, h: e.r * 1.2, size: o.crit ? 1.7 : 1, color: o.crit ? '#ffe14a' : '#ffffff', life: 0.13, max: 0.13 });
+    run.fx.push({ kind: 'ring', x: hx, y: hy, r: 4, maxR: o.crit ? 46 : 28, life: 0.18, max: 0.18, color: o.crit ? '#ffd84a' : '#ffffff', w: 4 });
+    e.stun = Math.max(e.stun || 0, o.crit ? 0.35 : 0.2);
+    run.hitstop = Math.max(run.hitstop, o.crit ? 0.075 : 0.035);
+    run.shake = Math.max(run.shake, o.crit ? 9 : 4);
+    run.shakeDir = o.dir;
+    if (o.crit) run.zoom = Math.max(run.zoom, 0.035);
     if (o.crit) SFX.crit(); else SFX.hit();
   }
   if (e.hp <= 0) killEnemy(e, o);
@@ -365,8 +389,9 @@ function killEnemy(e, o = {}) {
   if (e.T.gold >= 3 || Math.random() < 0.35) run.orbs.push({ x: e.x, y: e.y, kind: 'gold', v: g, t: 0, vx: rand(-80, 80), vy: rand(-80, 80) });
   // 被揍飛的身體
   const dir = o.dir !== undefined ? o.dir : Math.atan2(e.y, e.x);
-  const sp = rand(380, 560) / Math.sqrt(e.T.mass) * (e.T.boss ? 0.4 : 1);
-  run.bodies.push({ x: e.x, y: e.y, vx: Math.cos(dir) * sp, vy: Math.sin(dir) * sp, z: 0, vz: rand(160, 260),
+  const sp = rand(520, 780) / Math.sqrt(e.T.mass) * (e.T.boss ? 0.4 : 1);
+  if (o.punch) { run.hitstop = Math.max(run.hitstop, 0.05); run.shake = Math.max(run.shake, 6); }
+  run.bodies.push({ x: e.x, y: e.y, vx: Math.cos(dir) * sp, vy: Math.sin(dir) * sp, z: 0, vz: rand(280, 420),
     rot: rand(0, 6), vr: rand(-12, 12), r: e.r, life: 2.2, type: e.type });
   if (run.bodies.length > 90) run.bodies.shift();
   if (e.T.explode) explosion(e.x, e.y, 70, pDmg() * 2.5, false, '#ff9a3c');
@@ -418,7 +443,8 @@ function chainLightning(start, jumps, dmg, fromPunch) {
       let crit = false;
       if (run.syn.overload && Math.random() < run.p.crit) { d *= run.p.critDmg; crit = true; }
       if (cur.freezeT > 0 && run.syn.supercond) d *= 2;
-      damageEnemy(cur, d, { crit, dir: Math.atan2(cur.y - prev.y, cur.x - prev.x), kb: 40 });
+      damageEnemy(cur, d, { crit, dir: Math.atan2(cur.y - prev.y, cur.x - prev.x), kb: 40, show: true });
+      spark(cur.x, cur.y, '#cfe6ff', 6);
       if (run.syn.stormfire) applyBurn(cur, pDmg() * 0.5, 2.5);
       done.add(cur);
     }
@@ -497,8 +523,13 @@ const SKILLS = {
     cast(lv) {
       if (!nearestEnemies(150 + 15 * lv, 1).length) return false;
       const r = 130 + 18 * lv;
-      run.fx.push({ kind: 'ring', x: 0, y: 0, r: 20, maxR: r, life: 0.35, max: 0.35, color: '#e0b07a', w: 12 });
-      run.shake = Math.max(run.shake, 8);
+      run.fx.push({ kind: 'ring', x: 0, y: 0, r: 20, maxR: r, life: 0.45, max: 0.45, color: '#e0b07a', w: 14 });
+      run.fx.push({ kind: 'ring', x: 0, y: 0, r: 10, maxR: r * 0.6, life: 0.3, max: 0.3, color: '#ffffff', w: 8 });
+      for (let i = 0; i < 40; i++) {
+        const a = rand(0, Math.PI * 2), d = rand(30, r);
+        run.fx.push({ kind: 'dot', x: Math.cos(a) * d, y: Math.sin(a) * d, z: 4, vz: rand(150, 380), vx: Math.cos(a) * 60, vy: Math.sin(a) * 60, size: 6, color: '#b08a60', life: 0.6, max: 0.6 });
+      }
+      run.shake = Math.max(run.shake, 14); run.zoom = Math.max(run.zoom, 0.04);
       SFX.boom();
       for (const o of run.enemies) {
         if (o.dead) continue;
@@ -554,6 +585,8 @@ const SKILLS = {
       const r = 140 + 15 * lv;
       if (!nearestEnemies(r, 1).length) return false;
       run.fx.push({ kind: 'ring', x: 0, y: 0, r: 20, maxR: r, life: 0.4, max: 0.4, color: '#9be7ff', w: 14 });
+      run.fx.push({ kind: 'spikes', r, life: 0.9, max: 0.9 });
+      run.shake = Math.max(run.shake, 6);
       for (const o of run.enemies) {
         if (o.dead) continue;
         if (o.x * o.x + o.y * o.y < (r + o.r) ** 2) {
@@ -572,6 +605,17 @@ const SKILLS = {
     },
   },
 };
+
+const ELEMENT_COLOR = { fire: '#ff8a3c', ice: '#9be7ff', lightning: '#ffe14a' };
+function notifySkill(id) {
+  run.skillFlash[id] = 0.4;
+  run.castCount[id] = (run.castCount[id] || 0) + 1;
+  // 前幾次施放顯示技能名稱，讓玩家認得
+  if (run.castCount[id] <= 4) {
+    const info = SKILL_INFO[id];
+    run.texts.push({ x: 0, y: 0, h: 95, text: `${info.icon} ${info.name}`, color: ELEMENT_COLOR[info.element] || '#ffffff', size: 18, life: 1.1, max: 1.1, label: true });
+  }
+}
 
 function densest(range) {
   let best = null, bc = -1;
@@ -594,7 +638,7 @@ function updateSkills(dt) {
       s.t -= dt;
       if (s.t <= 0) {
         if (def.cast(s.lv) === false) s.t = 0.3;
-        else s.t = s.cd = def.cd(s.lv);
+        else { s.t = s.cd = def.cd(s.lv); notifySkill(id); }
       }
     }
   }
@@ -620,6 +664,8 @@ function updateEnemies(dt) {
     const damp = Math.exp(-7 * dt);
     e.vx *= damp; e.vy *= damp;
     if (e.freezeT > 0) continue;
+    if (e.squash > 0) e.squash -= dt;
+    if (e.stun > 0) { e.stun -= dt; continue; }
     const knocked = Math.hypot(e.vx, e.vy) > 60;
     const d = Math.hypot(e.x, e.y);
     const nx = -e.x / (d || 1), ny = -e.y / (d || 1);
@@ -775,8 +821,13 @@ function updateProjectiles(dt) {
     if (m.t <= 0) {
       m.dead = true;
       run.fx.push({ kind: 'ring', x: m.x, y: m.y, r: 10, maxR: m.r, life: 0.25, max: 0.25, color: '#ffd84a', w: 8 });
-      spark(m.x, m.y, '#ffd84a', 12);
-      run.shake = Math.max(run.shake, 5);
+      spark(m.x, m.y, '#ffd84a', 14);
+      for (let i = 0; i < 14; i++) {
+        const a = rand(0, Math.PI * 2);
+        run.fx.push({ kind: 'dot', x: m.x, y: m.y, z: 4, vz: rand(120, 300), vx: Math.cos(a) * 140, vy: Math.sin(a) * 140, size: 6, color: '#a08060', life: 0.5, max: 0.5 });
+      }
+      run.fx.push({ kind: 'impact', x: m.x, y: m.y, h: 15, size: 2.4, color: '#ffd84a', life: 0.16, max: 0.16 });
+      run.shake = Math.max(run.shake, 9);
       SFX.boom();
       for (const e of run.enemies) {
         if (e.dead) continue;
@@ -788,6 +839,10 @@ function updateProjectiles(dt) {
   // 區域
   for (const z of run.zones) {
     z.t -= dt; z.tick -= dt;
+    if (z.kind === 'fire' && Math.random() < 0.9) {
+      const a = rand(0, Math.PI * 2), d = Math.sqrt(Math.random()) * z.r;
+      run.fx.push({ kind: 'dot', rise: true, x: z.x + Math.cos(a) * d, y: z.y + Math.sin(a) * d, z: 3, vz: rand(40, 90), vx: 0, vy: 0, size: 7, color: Math.random() < 0.5 ? '#ff6a28' : '#ffc23a', life: 0.6, max: 0.6 });
+    }
     if (z.tick <= 0) {
       z.tick = 0.4;
       if (z.kind === 'fire') {
@@ -828,7 +883,7 @@ function gainXp(v) {
 function spark(x, y, color, n) {
   for (let i = 0; i < n; i++) {
     const a = rand(0, Math.PI * 2), s = rand(80, 300);
-    run.fx.push({ kind: 'dot', x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, size: rand(2, 5), color, life: rand(0.2, 0.4), max: 0.4 });
+    run.fx.push({ kind: 'dot', x, y, z: 22, vz: rand(60, 280), vx: Math.cos(a) * s, vy: Math.sin(a) * s, size: rand(2, 5), color, life: rand(0.25, 0.45), max: 0.45 });
   }
 }
 function lightningFx(x1, y1, x2, y2) {
@@ -846,7 +901,10 @@ function addText(x, y, text, color, size) { run.texts.push({ x, y, text, color, 
 function updateFx(dt) {
   for (const f of run.fx) {
     f.life -= dt;
-    if (f.kind === 'dot') { f.x += f.vx * dt; f.y += f.vy * dt; f.vx *= 0.92; f.vy *= 0.92; }
+    if (f.kind === 'dot') {
+      f.x += f.vx * dt; f.y += f.vy * dt; f.vx *= 0.92; f.vy *= 0.92;
+      if (f.vz !== undefined) { f.z += f.vz * dt; f.vz -= (f.rise ? -60 : 700) * dt; if (f.z < 2) { f.z = 2; f.vz = 0; } }
+    }
     else if (f.kind === 'ring') f.r += (f.maxR - f.r) * Math.min(1, dt * 14);
   }
   run.fx = run.fx.filter(f => f.life > 0);
@@ -862,7 +920,9 @@ function updateFx(dt) {
     if (b.z > 0) b.rot += b.vr * dt;
   }
   run.bodies = run.bodies.filter(b => b.life > 0);
-  run.shake = Math.max(0, run.shake - dt * 40);
+  run.shake = Math.max(0, run.shake - dt * 45);
+  run.zoom = Math.max(0, run.zoom - dt * 0.25);
+  for (const k in run.skillFlash) run.skillFlash[k] = Math.max(0, run.skillFlash[k] - dt);
   run.flash = Math.max(0, run.flash - dt);
   if (run.banner) { run.banner.t -= dt; if (run.banner.t <= 0) run.banner = null; }
 }
@@ -940,6 +1000,28 @@ function openLevelUp() {
   renderLevelUp();
 }
 
+// 技能在某等級的具體說明
+function skillText(id, lv) {
+  const sd = run.p.skillDmg;
+  const pct = v => `${Math.round(v * 100)}%`;
+  const sec = v => `${(+v.toFixed(1))} 秒`;
+  switch (id) {
+    case 'rocket': return `每 ${sec(3.2 - 0.25 * lv)}朝最近的敵人射出 ${1 + Math.floor(lv / 2)} 顆飛拳，一路貫穿，每個敵人受到 ${pct((2 + 0.6 * lv) * sd)} 傷害`;
+    case 'quake': return `每 ${sec(5.5 - 0.35 * lv)}捶地，半徑 ${130 + 18 * lv} 內的敵人受到 ${pct((1.6 + 0.5 * lv) * sd)} 傷害並被震飛`;
+    case 'meteor': return `每 ${sec(4.6 - 0.25 * lv)}從天上砸下 ${2 + lv} 個巨拳，落點範圍造成 ${pct((2.4 + 0.7 * lv) * sd)} 傷害`;
+    case 'orbit': return `${2 + Math.floor((lv - 1) / 2)} 個拳套一直繞著你轉，碰到敵人造成 ${pct((0.7 + 0.25 * lv) * sd)} 傷害`;
+    case 'bounce': return `每一拳打中後，再彈去打附近 ${1 + Math.floor(lv / 2)} 個敵人，造成 ${pct(0.45 + 0.08 * lv)} 傷害`;
+    case 'firePunch': return `出拳讓敵人著火，每秒燒掉 ${pct(0.4 + 0.15 * lv)} 出拳傷害，持續 2.5 秒`;
+    case 'fireZone': return `每 ${sec(6.5 - 0.3 * lv)}在敵人最多的地方點燃火圈（半徑 ${65 + 8 * lv}），持續 ${sec(3 + 0.4 * lv)}，踩到的敵人每秒受到 ${pct((0.5 + 0.2 * lv) * 2.5 * sd)} 傷害並著火`;
+    case 'icePunch': return `出拳讓敵人減速 50%，並有 ${pct(0.08 + 0.05 * lv)} 機率直接冰凍 1 秒`;
+    case 'frostNova': return `每 ${sec(7.5 - 0.4 * lv)}冰凍身邊半徑 ${140 + 15 * lv} 內所有敵人 ${sec(1.1 + 0.15 * lv)}，並造成 ${pct((1 + 0.3 * lv) * sd)} 傷害`;
+    case 'thunderPunch': return `每一拳有 ${pct(0.15 + 0.08 * lv)} 機率放出閃電，連續打附近 2 個敵人`;
+    case 'chain': return `每 ${sec(2.6 - 0.15 * lv)}放出閃電，在 ${3 + lv} 個敵人之間跳躍，每下 ${pct((1.2 + 0.35 * lv) * sd)} 傷害`;
+  }
+  return '';
+}
+const ELEMENT_NAME = { fire: '火系', ice: '冰系', lightning: '雷系' };
+
 function choiceView(c) {
   if (c.kind === 'stat') {
     const u = STAT_UPGRADES.find(x => x.id === c.id);
@@ -949,10 +1031,10 @@ function choiceView(c) {
   if (c.kind === 'skill') {
     const s = SKILL_INFO[c.id], lv = skillLv(c.id);
     const tag = s.element ? { fire: '火系技能', ice: '冰系技能', lightning: '雷系技能' }[s.element] : '技能';
-    return { icon: s.icon, name: s.name, tag: lv === 0 ? `新${tag}` : tag, lv: `Lv ${lv} → ${lv + 1}`, desc: lv === 0 ? s.desc : s.up, rarity: c.rarity, el: s.element };
+    return { icon: s.icon, name: s.name, tag: lv === 0 ? `新${tag}` : tag, lv: `Lv ${lv} → ${lv + 1}`, desc: skillText(c.id, lv + 1), rarity: c.rarity, el: s.element };
   }
   const s = SYNERGIES.find(x => x.id === c.id);
-  return { icon: s.icon, name: s.name, tag: '元素組合', lv: '', desc: s.desc, rarity: c.rarity };
+  return { icon: s.icon, name: s.name, tag: `元素組合（${s.req.map(r => ELEMENT_NAME[r]).join('＋')}）`, lv: '', desc: s.desc, rarity: c.rarity, el: s.req.length === 1 ? s.req[0] : '' };
 }
 
 function renderLevelUp() {
@@ -1252,8 +1334,12 @@ function drawHUD() {
   const y = SH - sz - 70;
   for (const id of ids) {
     const s = run.skills[id], info = SKILL_INFO[id];
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    const fl = run.skillFlash[id] || 0;
+    ctx.fillStyle = fl > 0 ? `rgba(255,255,255,${0.25 + fl})` : 'rgba(0,0,0,0.55)';
     ctx.fillRect(x, y, sz, sz);
+    ctx.strokeStyle = ELEMENT_COLOR[info.element] || 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x + 1, y + 1, sz - 2, sz - 2);
     ctx.font = `${sz * 0.55}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillStyle = '#fff';
     ctx.fillText(info.icon, x + sz / 2, y + sz / 2);
@@ -1303,9 +1389,11 @@ function drawWorldOverlay() {
     bar(s.x - w / 2, s.y, w, 4, e.hp / e.maxHp, '#ff5a4a', 'rgba(0,0,0,0.6)');
   }
   for (const t of run.texts) {
-    const s = R3D.project(t.x, t.y, 40 + (1 - t.life / t.max) * 30);
+    const k = (t.max - t.life) / 0.12;
+    const pop = k < 1 ? 1.7 - 0.7 * k : 1;
+    const s = R3D.project(t.x, t.y, (t.h || 40) + (1 - t.life / t.max) * 30);
     ctx.globalAlpha = Math.min(1, t.life / t.max * 2);
-    ctx.font = `900 ${t.size}px system-ui, sans-serif`;
+    ctx.font = `900 ${t.size * pop}px system-ui, sans-serif`;
     ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,0.7)';
     ctx.strokeText(t.text, s.x, s.y);
     ctx.fillStyle = t.color;
