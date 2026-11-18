@@ -46,67 +46,117 @@ function writeSave() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)
 let save = loadSave();
 const metaLv = id => save.meta[id] || 0;
 
-// ---------- 音效 ----------
+// ---------- 音效（WebAudio 即時合成：主音量壓縮、殘響、多層打擊、觀眾、背景節奏） ----------
 let actx = null, muted = false, lastHitSound = 0, lastSwing = 0;
+let master = null, sfxBus = null, revSend = null, crowdGain = null, musicGain = null, noiseBuf = null;
 function ensureAudio() {
-  if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { actx = null; } }
-  if (actx && actx.state === 'suspended') actx.resume();
-}
-function tone(freq, dur, type = 'square', vol = 0.05, slide = 0, delay = 0) {
-  if (!actx || muted) return;
-  const t = actx.currentTime + delay;
-  const o = actx.createOscillator(), g = actx.createGain();
-  o.type = type;
-  o.frequency.setValueAtTime(freq, t);
-  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq + slide), t + dur);
-  g.gain.setValueAtTime(vol, t);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  o.connect(g).connect(actx.destination);
-  o.start(t); o.stop(t + dur + 0.02);
-}
-let noiseBuf = null;
-function noise(dur, vol = 0.1, filter = 0, ftype = 'lowpass') {
-  if (!actx || muted) return;
-  if (!noiseBuf) {
-    noiseBuf = actx.createBuffer(1, actx.sampleRate * 0.5, actx.sampleRate);
-    const d = noiseBuf.getChannelData(0);
-    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  if (!actx) {
+    try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { actx = null; return; }
+    // 主輸出：壓縮器避免破音
+    const comp = actx.createDynamicsCompressor();
+    comp.threshold.value = -16; comp.knee.value = 12; comp.ratio.value = 5; comp.attack.value = 0.003; comp.release.value = 0.2;
+    master = actx.createGain(); master.gain.value = 0.9;
+    master.connect(comp).connect(actx.destination);
+    sfxBus = actx.createGain(); sfxBus.connect(master);
+    // 殘響：合成的場館脈衝響應（約 1.3 秒）
+    const len = Math.floor(actx.sampleRate * 1.3), ir = actx.createBuffer(2, len, actx.sampleRate);
+    for (let c = 0; c < 2; c++) { const d = ir.getChannelData(c); for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3); }
+    const conv = actx.createConvolver(); conv.buffer = ir;
+    revSend = actx.createGain(); revSend.gain.value = 0.22;
+    revSend.connect(conv).connect(master);
+    noiseBuf = actx.createBuffer(1, actx.sampleRate * 2, actx.sampleRate);
+    const nd = noiseBuf.getChannelData(0); let b0 = 0, b1 = 0, b2 = 0;
+    for (let i = 0; i < nd.length; i++) { const w = Math.random() * 2 - 1; b0 = 0.99765 * b0 + w * 0.099; b1 = 0.963 * b1 + w * 0.2965; b2 = 0.57 * b2 + w * 1.0527; nd[i] = (b0 + b1 + b2 + w * 0.1848) * 0.25; }
+    startCrowd();
+    startMusic();
   }
-  const t = actx.currentTime, s = actx.createBufferSource(), g = actx.createGain();
-  s.buffer = noiseBuf;
-  g.gain.setValueAtTime(vol, t);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  if (filter) {
-    const f = actx.createBiquadFilter();
-    f.type = ftype; f.frequency.value = filter;
-    s.connect(f).connect(g).connect(actx.destination);
-  } else s.connect(g).connect(actx.destination);
-  s.start(t); s.stop(t + dur);
+  if (actx.state === 'suspended') actx.resume();
+}
+function setMuted(m) { muted = m; if (master) master.gain.setTargetAtTime(m ? 0 : 0.9, actx.currentTime, 0.05); }
+const jit = (v, p = 0.12) => v * (1 + (Math.random() * 2 - 1) * p);
+// 單一振盪音：頻率滑落、音量包絡
+function osc(freq, dur, { type = 'sine', vol = 0.3, to = 0, delay = 0, rev = 0 } = {}) {
+  if (!actx || muted) return;
+  const t = actx.currentTime + delay, o = actx.createOscillator(), g = actx.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, t);
+  if (to) o.frequency.exponentialRampToValueAtTime(Math.max(20, to), t + dur);
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + 0.004); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(sfxBus); if (rev) { const r = actx.createGain(); r.gain.value = rev; g.connect(r).connect(revSend); }
+  o.start(t); o.stop(t + dur + 0.05);
+}
+// 濾波噪音：可掃頻（揮拳破風、拍擊、爆炸）
+function nz(dur, { vol = 0.2, type = 'bandpass', f = 1500, f2 = 0, q = 1, delay = 0, rev = 0, attack = 0.003 } = {}) {
+  if (!actx || muted) return;
+  const t = actx.currentTime + delay, s = actx.createBufferSource(), fl = actx.createBiquadFilter(), g = actx.createGain();
+  s.buffer = noiseBuf; s.playbackRate.value = jit(1, 0.2);
+  fl.type = type; fl.Q.value = q; fl.frequency.setValueAtTime(f, t);
+  if (f2) fl.frequency.exponentialRampToValueAtTime(f2, t + dur);
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + attack); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  s.connect(fl).connect(g); g.connect(sfxBus); if (rev) { const r = actx.createGain(); r.gain.value = rev; g.connect(r).connect(revSend); }
+  s.start(t, Math.random() * 1.5); s.stop(t + dur + 0.05);
+}
+// 觀眾：持續的低沉人聲噪音，連擊越高越大聲
+function startCrowd() {
+  const s = actx.createBufferSource(); s.buffer = noiseBuf; s.loop = true;
+  const f = actx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 520; f.Q.value = 0.6;
+  crowdGain = actx.createGain(); crowdGain.gain.value = 0.0;
+  s.connect(f).connect(crowdGain).connect(master); s.start();
+}
+function crowdLevel(v) { if (crowdGain && actx) crowdGain.gain.setTargetAtTime(v, actx.currentTime, 0.4); }
+function cheer(strength = 1) { if (!actx || muted) return; nz(1.6 * strength, { vol: 0.12 * strength, f: 900, f2: 600, q: 0.5, attack: 0.25, rev: 0.3 }); }
+// 背景節奏：每拍排程（大鼓、小鼓、鈸、低音），音量低
+const BPM = 112;
+let musicNext = 0, musicStep = 0;
+const BASS = [41.2, 41.2, 49, 41.2, 55, 41.2, 49, 36.7];
+function startMusic() {
+  musicGain = actx.createGain(); musicGain.gain.value = 0.32; musicGain.connect(master);
+  musicNext = actx.currentTime + 0.1;
+  setInterval(scheduleMusic, 50);
+}
+function mHit(fn) { const keep = sfxBus; sfxBus = musicGain; try { fn(); } finally { sfxBus = keep; } }
+function scheduleMusic() {
+  if (!actx || muted) { if (actx) musicNext = actx.currentTime + 0.1; return; }
+  const step = 60 / BPM / 2; // 八分音符
+  while (musicNext < actx.currentTime + 0.2) {
+    const d = musicNext - actx.currentTime, i = musicStep % 16;
+    mHit(() => {
+      if (i % 4 === 0) osc(110, 0.22, { vol: 0.5, to: 40, delay: d });                       // 大鼓
+      if (i % 8 === 4) nz(0.16, { vol: 0.28, f: 1800, q: 0.8, delay: d });                  // 小鼓
+      if (i % 2 === 1) nz(0.04, { vol: 0.07, type: 'highpass', f: 7000, delay: d });        // 鈸
+      if (i % 2 === 0) osc(BASS[(i / 2) | 0], step * 1.8, { type: 'sawtooth', vol: 0.09, delay: d }); // 低音
+    });
+    musicNext += step; musicStep++;
+  }
 }
 const SFX = {
+  // 揮拳：破風聲（帶通噪音由低掃到高）
+  swing: () => { const n = performance.now(); if (n - lastSwing < 70) return; lastSwing = n; nz(0.13, { vol: 0.09, f: 500, f2: 2600, q: 1.2 }); },
+  // 命中：低沉身體悶響 ＋ 拳套拍擊 ＋ 清脆爆裂，每次音高隨機
   hit: () => {
-    const n = performance.now(); if (n - lastHitSound < 30) return; lastHitSound = n;
-    noise(0.09, 0.32, 900);            // 悶響
-    tone(120, 0.12, 'sine', 0.3, -80);  // 低頻「砰」
-    noise(0.03, 0.16, 3000, 'highpass'); // 皮革拍擊
-    tone(60, 0.16, 'sine', 0.25, -25);   // 胸腔共鳴
+    const n = performance.now(); if (n - lastHitSound < 28) return; lastHitSound = n;
+    osc(jit(150), 0.17, { vol: 0.55, to: 45 });
+    nz(0.07, { vol: 0.45, f: jit(1700), q: 0.9, rev: 0.15 });
+    nz(0.025, { vol: 0.25, type: 'highpass', f: 5200 });
   },
+  // 暴擊：更重的低頻 ＋ 長一點的拍擊 ＋ 金屬感高頻
   crit: () => {
-    noise(0.16, 0.4, 700);
-    tone(95, 0.2, 'sine', 0.35, -60);
-    tone(1800, 0.06, 'square', 0.05, -1200);
-    noise(0.05, 0.2, 4000, 'highpass');
+    osc(jit(120), 0.3, { vol: 0.75, to: 32 });
+    nz(0.12, { vol: 0.6, f: jit(1300), q: 0.7, rev: 0.35 });
+    nz(0.04, { vol: 0.35, type: 'highpass', f: 4500 });
+    osc(jit(1900), 0.12, { type: 'triangle', vol: 0.08, to: 900, rev: 0.4 });
   },
-  swing: () => { const n = performance.now(); if (n - lastSwing < 70) return; lastSwing = n; noise(0.08, 0.05, 1600, 'bandpass'); },
-  hurt: () => { noise(0.15, 0.12); tone(110, 0.2, 'sawtooth', 0.07, -50); },
-  boom: () => { noise(0.35, 0.35, 600); tone(60, 0.35, 'sine', 0.3, -30); },
-  zap: () => tone(1400, 0.08, 'sawtooth', 0.03, -900),
-  level: () => { tone(523, 0.1, 'square', 0.05); tone(659, 0.1, 'square', 0.05, 0, 0.08); tone(880, 0.18, 'square', 0.05, 0, 0.16); },
-  pick: () => tone(660, 0.08, 'triangle', 0.05, 220),
-  wave: () => { tone(392, 0.12, 'triangle', 0.07); tone(523, 0.18, 'triangle', 0.07, 0, 0.1); },
-  boss: () => { tone(110, 0.5, 'sawtooth', 0.08, -30); tone(82, 0.6, 'sawtooth', 0.08, -20, 0.25); },
-  ult: () => { noise(0.5, 0.25); tone(60, 0.6, 'sawtooth', 0.15, 200); },
-  over: () => { tone(392, 0.2, 'triangle', 0.08); tone(311, 0.2, 'triangle', 0.08, 0, 0.18); tone(196, 0.5, 'triangle', 0.08, 0, 0.36); },
+  hurt: () => { osc(jit(95), 0.22, { vol: 0.5, to: 50 }); nz(0.14, { vol: 0.35, type: 'lowpass', f: 900 }); osc(220, 0.18, { type: 'square', vol: 0.05, to: 140 }); },
+  // 爆炸、擊倒頭目：大範圍低頻 ＋ 碎裂噪音 ＋ 殘響
+  boom: () => { osc(jit(70), 0.6, { vol: 0.85, to: 25, rev: 0.4 }); nz(0.5, { vol: 0.5, type: 'lowpass', f: 1600, f2: 200, rev: 0.5 }); },
+  zap: () => { nz(0.12, { vol: 0.25, type: 'highpass', f: 3000, f2: 8000 }); osc(jit(1600), 0.1, { type: 'sawtooth', vol: 0.08, to: 300 }); },
+  level: () => { [523, 659, 784, 1047].forEach((f, i) => osc(f, 0.18, { type: 'triangle', vol: 0.18, delay: i * 0.07, rev: 0.4 })); },
+  pick: () => osc(660, 0.08, { type: 'triangle', vol: 0.15, to: 880 }),
+  wave: () => { osc(392, 0.15, { type: 'triangle', vol: 0.2, rev: 0.3 }); osc(523, 0.25, { type: 'triangle', vol: 0.2, delay: 0.12, rev: 0.3 }); cheer(0.6); },
+  boss: () => { osc(98, 0.7, { type: 'sawtooth', vol: 0.2, to: 70, rev: 0.4 }); osc(73, 0.9, { type: 'sawtooth', vol: 0.2, to: 55, delay: 0.3, rev: 0.4 }); },
+  ult: () => { osc(55, 0.8, { type: 'sawtooth', vol: 0.4, to: 220, rev: 0.5 }); nz(0.7, { vol: 0.5, type: 'lowpass', f: 300, f2: 4000, rev: 0.5 }); cheer(1.2); },
+  over: () => { [392, 311, 196].forEach((f, i) => osc(f, i === 2 ? 0.6 : 0.22, { type: 'triangle', vol: 0.22, delay: i * 0.18, rev: 0.4 })); },
+  // 擊倒：重擊 ＋ 觀眾小歡呼（機率）
+  ko: () => { osc(jit(85), 0.25, { vol: 0.5, to: 35 }); if (Math.random() < 0.12) cheer(0.5); },
 };
 
 // ---------- 小工具 ----------
@@ -130,6 +180,7 @@ function fmt(n) { return n >= 10000 ? (n / 1000).toFixed(1) + 'k' : Math.round(n
 // ---------- 遊戲狀態 ----------
 // title | play | levelup | pause | chapter | gameover | shop
 let state = 'title';
+const SKILL_MENU = false; // 技能與強化選單（之後再開啟）
 let run = null;
 let time = 0;
 
@@ -138,7 +189,7 @@ function newPlayer() {
     x: 0, y: 0, hp: 100, maxHp: 100, baseDmg: 5, dmgMult: 1, rate: 0.3, range: 150,
     crit: 0.05, critDmg: 1.6, regen: 0, lifesteal: 0, kb: 1, xpGain: 1, skillDmg: 1, multi: 1,
     goldMult: 1, slots: 3, revives: 0, shield: 0, shieldT: 0,
-    facing: -Math.PI / 2, punchT: 0, armSide: 1, punches: [], hurtT: 0,
+    facing: Math.PI / 2, punchT: 0, idleT: 0, armSide: 1, punches: [], hurtT: 0,
   };
 }
 const pDmg = () => run.p.baseDmg * run.p.dmgMult;
@@ -281,12 +332,11 @@ function updatePlayer(dt) {
     p.ret.t += dt;
     const k = Math.min(1, Math.max(0, p.ret.t) / p.ret.dur);
     // 只在騰空那段（約 25%～75%）移回中央；蹲下蓄力和落地時站在原地
-    const m = Math.min(1, Math.max(0, (k - 0.25) / 0.5));
+    const m = Math.min(1, Math.max(0, (k - 0.26) / 0.42)); // 只在騰空段移動
     const e = m * m * (3 - 2 * m);
     if (p.ret.t >= 0) { p.x = p.ret.fx * (1 - e); p.y = p.ret.fy * (1 - e); }
     if (k >= 1) { p.ret = null; p.punchT = Math.max(p.punchT, 0.1); }
   }
-  if (p.landT > 0) p.landT -= dt;
   if (p.punchT <= 0 && !p.ret) {
     if (zone.length) {
       p.punchT = rate;
@@ -323,10 +373,11 @@ function updatePlayer(dt) {
       if (md / left > 500 && Math.random() < 0.6) run.fx.push({ kind: 'smoke', x: p.x, y: p.y, h: 6, vx: -mx / md * 60, vy: -my / md * 60, size: 14, life: 0.35, max: 0.35 });
     }
     p.facing = Math.atan2(ty - p.y, tx - p.x);
-  } else if (!zone.length && !p.ret && !p.punches.length && Math.hypot(p.x, p.y) > 10) {
-    // 連段中斷（圈內暫時沒有敵人）：後空翻回中央
-    startReturn(0.05);
   }
+  // 打完一秒內沒有下一個動作，才跳回中央
+  if (!p.ret && !p.punches.length) {
+    p.idleT += dt;
+  } else p.idleT = 0;
   for (const pu of p.punches) {
     pu.t += dt;
     if (!pu.target.dead) { pu.tx = pu.target.x; pu.ty = pu.target.y; }
@@ -340,20 +391,21 @@ function zoneEnemies() {
   const p = run.p, out = [];
   for (const e of run.enemies) {
     if (e.dead) continue;
-    if (Math.hypot(e.x, e.y) - e.r > p.range) continue;
+    const near = Math.hypot(e.x - p.x, e.y - p.y) - e.r < PLAYER_R + 40; // 貼身的敵人：就算在圈外也要反擊
+    if (!near && Math.hypot(e.x, e.y) - e.r > p.range) continue;
     out.push([Math.hypot(e.x - p.x, e.y - p.y), e]);
   }
   out.sort((a, b) => a[0] - b[0]);
   return out.map(x => x[1]);
 }
 
-// 連段打完：面朝外、後空翻回到擂台中央
+// 閒置一秒後：面向中央，雙腳跳回擂台中央
 function startReturn(delay = 0.12) {
   const p = run.p;
   const d = Math.hypot(p.x, p.y);
   if (d < 10) return;
-  p.facing = Math.atan2(p.y, p.x); // 背對中央，往後翻就是回中央
-  p.ret = { fx: p.x, fy: p.y, t: -delay, dur: 0.75 };
+  p.facing = Math.atan2(-p.y, -p.x); // 面向中央，往前跳回去
+  p.ret = { fx: p.x, fy: p.y, t: -delay, dur: 1.0 };
   p.punchT = Math.max(p.punchT, p.ret.dur + delay);
 }
 
@@ -368,7 +420,7 @@ function launchPunch(target, rate, finisher = false, extra = false) {
 }
 
 function punchHit(e, pu) {
-  if (pu && pu.finisher) { finisherBlast(e); startReturn(0.15); }
+  if (pu && pu.finisher) finisherBlast(e);
   if (e.dead) return;
   if (e.bottle) {
     e.dead = true;
@@ -416,14 +468,14 @@ function finisherBlast(e) {
   run.fx.push({ kind: 'ring', x, y, r: 10, maxR: R * 1.4, life: 0.4, max: 0.4, color: '#ffd23a', w: 12 });
   run.fx.push({ kind: 'ring', x, y, r: 5, maxR: R, life: 0.3, max: 0.3, color: '#ffffff', w: 8 });
   run.fx.push({ kind: 'crack', x, y, rot: rand(0, Math.PI * 2), size: 120, life: 1.6, max: 1.6 });
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 14; i++) {
     const a = rand(0, Math.PI * 2), sp = rand(150, 500);
     run.fx.push({ kind: 'dot', x, y, z: 10, vz: rand(100, 400), vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, size: 7, color: Math.random() < 0.5 ? '#ffd23a' : '#ffffff', life: 0.5, max: 0.5 });
   }
-  run.shake = Math.max(run.shake, 20);
-  run.zoom = Math.max(run.zoom, 0.07);
-  run.hitstop = Math.max(run.hitstop, 0.13);
-  run.flash = Math.max(run.flash, 0.08);
+  run.shake = Math.max(run.shake, 9);
+  run.zoom = Math.max(run.zoom, 0.04);
+  run.hitstop = Math.max(run.hitstop, 0.1);
+  run.flash = Math.max(run.flash, 0.04);
   SFX.boom();
   addComic(x, y, Math.atan2(y, x));
   for (const o of run.enemies) {
@@ -438,6 +490,13 @@ function damageEnemy(e, amount, o = {}) {
   if (e.burn && run.syn.fuel) a *= 1.3;
   if (e.slowT > 0 && run.syn.frostbite) a *= 1.25;
   if (e.shield > 0) { const ab = Math.min(e.shield, a); e.shield -= ab; a -= ab; }
+  if (o.punch && a <= 0) {
+    // 整拳被護盾擋下：藍色擋格圈＋「擋」字，敵人不閃白、不踉蹌，一看就知道沒打進去
+    run.fx.push({ kind: 'ring', x: e.x, y: e.y, r: e.r * 0.8, maxR: e.r * 1.8, life: 0.2, max: 0.2, color: '#7cc8ff', w: 5 });
+    if (run.texts.length < 14) addText(e.x, e.y - 8, '擋', '#7cc8ff', 15);
+    SFX.hit();
+    return 0;
+  }
   e.hp -= a;
   e.flash = 0.08;
   if (o.punch || a >= pDmg() * 1.5) { e.hitN = (e.hitN || 0) + 1; e.hitDir = o.dir; }
@@ -448,7 +507,7 @@ function damageEnemy(e, amount, o = {}) {
   }
   if (run.p.lifesteal && a > 0) run.p.hp = Math.min(run.p.maxHp, run.p.hp + a * run.p.lifesteal);
   if (o.show || o.crit) {
-    if (run.texts.length < 40) addText(e.x + rand(-6, 6), e.y, o.crit ? fmt(a) + '!' : fmt(a), o.crit ? '#ffd23a' : '#ffffff', o.crit ? 30 : 20);
+    if (run.texts.length < (o.crit ? 30 : 12)) addText(e.x + rand(-6, 6), e.y, o.crit ? fmt(a) + '!' : fmt(a), o.crit ? '#ffd23a' : '#ffffff', o.crit ? 24 : 15);
   }
   e.squash = 0.12;
   if (o.punch) {
@@ -456,30 +515,32 @@ function damageEnemy(e, amount, o = {}) {
     const h = e.r * 2.2;
     const col = o.crit ? '#ffd23a' : ELEMENT_HIT();
     // 往出拳方向噴的火花
-    for (let i = 0; i < (o.crit ? 16 : 9); i++) {
+    for (let i = 0; i < (o.crit ? 10 : 4); i++) {
       const a = o.dir + rand(-0.55, 0.55), sp = rand(200, 560);
       run.fx.push({ kind: 'dot', x: hx, y: hy, z: h, vz: rand(-40, 260), vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, size: rand(3, 7), color: Math.random() < 0.6 ? col : '#ffffff', life: rand(0.18, 0.4), max: 0.4 });
     }
-    for (let i = 0; i < (o.crit ? 10 : 6); i++) {
+    for (let i = 0; i < (o.crit ? 5 : 0); i++) {
       const a = o.dir + rand(-0.7, 0.7), sp = rand(350, 750);
       run.fx.push({ kind: 'shard', x: hx, y: hy, z: h, vz: rand(40, 320), vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, color: Math.random() < 0.5 ? col : '#fff4d0', life: rand(0.15, 0.3), max: 0.3 });
     }
-    if (o.crit) run.fx.push({ kind: 'crack', x: e.x, y: e.y, rot: rand(0, Math.PI * 2), size: e.r * 3.2, life: 1.4, max: 1.4 });
+    if (o.crit) run.fx.push({ kind: 'crack', x: e.x, y: e.y, rot: rand(0, Math.PI * 2), size: e.r * 2.6, life: 0.8, max: 0.8 });
     // 分層：白閃 → 星芒 → 速度線、貫穿震波 → 煙
-    run.fx.push({ kind: 'flash', x: hx, y: hy, h, size: o.crit ? 1.8 : 1.1, life: 0.06, max: 0.06 });
-    run.fx.push({ kind: 'impact', x: hx, y: hy, h, dir: o.dir, rot: rand(0, Math.PI * 2), size: o.crit ? 1.7 : 1, color: col, life: 0.16, max: 0.16 });
-    run.fx.push({ kind: 'lines', x: hx, y: hy, h, dir: o.dir, n: o.crit ? 10 : 6, seed: Math.random() * 100, color: col, life: 0.18, max: 0.18 });
-    run.fx.push({ kind: 'dring', x: e.x, y: e.y, h, dir: o.dir, r: 4, maxR: o.crit ? 60 : 36, color: col, life: 0.22, max: 0.22 });
-    for (let i = 0; i < 4; i++) {
+    run.fx.push({ kind: 'flash', x: hx, y: hy, h, size: o.crit ? 1.2 : 0.55, life: 0.06, max: 0.06 });
+    run.fx.push({ kind: 'impact', x: hx, y: hy, h, dir: o.dir, rot: rand(0, Math.PI * 2), size: o.crit ? 1.5 : 0.85, color: col, life: 0.16, max: 0.16 });
+    if (o.crit) run.fx.push({ kind: 'lines', x: hx, y: hy, h, dir: o.dir, n: 8, seed: Math.random() * 100, color: col, life: 0.18, max: 0.18 });
+    if (o.crit) run.fx.push({ kind: 'dring', x: e.x, y: e.y, h, dir: o.dir, r: 4, maxR: 50, color: col, life: 0.22, max: 0.22 });
+    for (let i = 0; i < (o.crit ? 2 : 0); i++) {
       const a = o.dir + rand(-1, 1);
       run.fx.push({ kind: 'smoke', x: e.x, y: e.y, h: rand(5, h), vx: Math.cos(a) * rand(30, 90), vy: Math.sin(a) * rand(30, 90), size: rand(12, 22), life: rand(0.35, 0.55), max: 0.55 });
     }
-    if (o.crit && Math.random() < 0.45) addComic(e.x, e.y, o.dir);
+    if (o.crit && Math.random() < 0.12) addComic(e.x, e.y, o.dir);
     e.stun = Math.max(e.stun || 0, o.crit ? 0.35 : 0.2);
-    run.hitstop = Math.max(run.hitstop, o.crit ? 0.08 : 0.04);
-    run.shake = Math.max(run.shake, o.crit ? 13 : 6);
+    // 打擊感分級：普通命中只有極短停頓、鏡頭不晃；打到重型敵人有一點沉重感；暴擊才明顯
+    const heavy = e.T.mass >= 2;
+    run.hitstop = Math.max(run.hitstop, o.crit ? 0.07 : (heavy ? 0.045 : 0.03));
+    run.shake = Math.max(run.shake, o.crit ? 6 : (heavy ? 2.5 : 0));
     run.shakeDir = o.dir;
-    if (o.crit) run.zoom = Math.max(run.zoom, 0.035);
+    if (o.crit) run.zoom = Math.max(run.zoom, 0.02);
     if (o.crit) SFX.crit(); else SFX.hit();
   }
   if (e.hp <= 0) killEnemy(e, o);
@@ -492,9 +553,10 @@ function killEnemy(e, o = {}) {
   run.kills++;
   run.combo = Math.floor(run.combo) + 1;
   run.comboIdle = 0;
+  SFX.ko();
   run.comboPop = 0.15;
   const CALL = { 10: ['不錯！', '#ffe14a'], 25: ['很猛！', '#ffb03a'], 50: ['無雙！', '#ff7a3c'], 100: ['拳神降臨！', '#ff4fd8'], 200: ['天下無敵！', '#ff4fd8'] };
-  if (CALL[run.combo]) { setBanner(CALL[run.combo][0], CALL[run.combo][1], 1.1); SFX.level(); }
+  if (CALL[run.combo]) { setBanner(CALL[run.combo][0], CALL[run.combo][1], 1.1); SFX.level(); cheer(1); }
   run.maxCombo = Math.max(run.maxCombo, run.combo);
   run.ult = Math.min(run.ultMax, run.ult + (e.T.boss ? 20 : 1));
   run.score += Math.round(e.T.xp * 10 * COMBO_DMG[comboTier()]);
@@ -506,10 +568,11 @@ function killEnemy(e, o = {}) {
   const dir = o.dir !== undefined ? o.dir : Math.atan2(e.y - run.p.y, e.x - run.p.x);
   const sp = rand(520, 780) / Math.sqrt(e.T.mass) * (e.T.boss ? 0.4 : 1);
   if (o.punch) {
-    if (Math.random() < 0.18) addComic(e.x, e.y, dir);
-    run.hitstop = Math.max(run.hitstop, 0.06);
-    run.shake = Math.max(run.shake, 9);
-    if (o.crit) { run.slowmo = 0.18; run.zoom = Math.max(run.zoom, 0.05); }
+    if (Math.random() < 0.05) addComic(e.x, e.y, dir);
+    run.hitstop = Math.max(run.hitstop, 0.05);
+    run.shake = Math.max(run.shake, 3);
+    // 慢動作只留給頭目和少數暴擊擊倒，不然節奏會一直被打斷
+    if (e.T.boss || (o.crit && Math.random() < 0.2)) { run.slowmo = 0.12; run.zoom = Math.max(run.zoom, 0.03); }
   }
   run.bodies.push({ x: e.x, y: e.y, vx: Math.cos(dir) * sp, vy: Math.sin(dir) * sp, z: 0, vz: rand(280, 420),
     rot: rand(0, 6), vr: rand(-12, 12), r: e.r, life: 2.2, type: e.type });
@@ -519,7 +582,7 @@ function killEnemy(e, o = {}) {
   if (e.T.poison) run.zones.push({ kind: 'poison', x: e.x, y: e.y, r: 42, t: 4, max: 4, tick: 0 });
   if (e.T.boss) {
     run.bossRef = null;
-    run.shake = 18; run.hitstop = 0.3; run.flash = 0.35;
+    run.shake = 10; run.hitstop = 0.22; run.flash = 0.18;
     setBanner('擊敗頭目！', '#ffd84a', 2);
     SFX.boom();
   }
@@ -528,7 +591,7 @@ function killEnemy(e, o = {}) {
 function explosion(x, y, r, dmg, hurtsPlayer, color) {
   run.fx.push({ kind: 'ring', x, y, r: 8, maxR: r, life: 0.3, max: 0.3, color, w: 6 });
   spark(x, y, color, 16);
-  run.shake = Math.max(run.shake, 6);
+  run.shake = Math.max(run.shake, 3);
   SFX.boom();
   for (const o of run.enemies) {
     if (o.dead) continue;
@@ -590,7 +653,7 @@ function hurtPlayer(d) {
   }
   p.hp -= d;
   p.hurtT = 0.15;
-  run.shake = Math.max(run.shake, 6);
+  run.shake = Math.max(run.shake, 3);
   run.flash = Math.max(run.flash, 0.12);
   SFX.hurt();
   if (p.hp <= 0) {
@@ -606,7 +669,7 @@ function hurtPlayer(d) {
 function shockwave(r, dmg) {
   const P = run.p;
   run.fx.push({ kind: 'ring', x: P.x, y: P.y, r: 20, maxR: r, life: 0.45, max: 0.45, color: '#ffffff', w: 10 });
-  run.shake = 16; run.flash = 0.2;
+  run.shake = 9; run.flash = 0.1;
   for (const o of run.enemies) {
     if (o.dead) continue;
     if ((o.x - P.x) ** 2 + (o.y - P.y) ** 2 < (r + o.r) ** 2) damageEnemy(o, dmg, { dir: Math.atan2(o.y - P.y, o.x - P.x), kb: 500 });
@@ -650,7 +713,7 @@ const SKILLS = {
         const a = rand(0, Math.PI * 2), d = rand(30, r);
         run.fx.push({ kind: 'dot', x: P.x + Math.cos(a) * d, y: P.y + Math.sin(a) * d, z: 4, vz: rand(150, 380), vx: Math.cos(a) * 60, vy: Math.sin(a) * 60, size: 6, color: '#b08a60', life: 0.6, max: 0.6 });
       }
-      run.shake = Math.max(run.shake, 14); run.zoom = Math.max(run.zoom, 0.04);
+      run.shake = Math.max(run.shake, 7); run.zoom = Math.max(run.zoom, 0.025);
       SFX.boom();
       for (const o of run.enemies) {
         if (o.dead) continue;
@@ -707,7 +770,7 @@ const SKILLS = {
       const P = run.p;
       run.fx.push({ kind: 'ring', x: P.x, y: P.y, r: 20, maxR: r, life: 0.4, max: 0.4, color: '#9be7ff', w: 14 });
       run.fx.push({ kind: 'spikes', x: P.x, y: P.y, r, life: 0.9, max: 0.9 });
-      run.shake = Math.max(run.shake, 6);
+      run.shake = Math.max(run.shake, 3);
       for (const o of run.enemies) {
         if (o.dead) continue;
         if ((o.x - P.x) ** 2 + (o.y - P.y) ** 2 < (r + o.r) ** 2) {
@@ -950,7 +1013,7 @@ function updateProjectiles(dt) {
         run.fx.push({ kind: 'dot', x: m.x, y: m.y, z: 4, vz: rand(120, 300), vx: Math.cos(a) * 140, vy: Math.sin(a) * 140, size: 6, color: '#a08060', life: 0.5, max: 0.5 });
       }
       run.fx.push({ kind: 'impact', x: m.x, y: m.y, h: 15, size: 2.4, color: '#ffd84a', life: 0.16, max: 0.16 });
-      run.shake = Math.max(run.shake, 9);
+      run.shake = Math.max(run.shake, 5);
       SFX.boom();
       for (const e of run.enemies) {
         if (e.dead) continue;
@@ -1029,7 +1092,7 @@ function ELEMENT_HIT() {
 const COMICS = [['砰！', '#ffd23a'], ['啪！', '#ffffff'], ['喝！', '#ff7a3c'], ['碰！', '#ffd23a'], ['哈！', '#ff9a3c']];
 function addComic(x, y, dir) {
   const [t, c] = COMICS[Math.floor(Math.random() * COMICS.length)];
-  run.texts.push({ x: x + Math.cos(dir) * 20, y: y + Math.sin(dir) * 20, h: 70, text: t, color: c, size: 40, life: 0.6, max: 0.6, comic: true, rot: rand(-0.35, 0.35) });
+  run.texts.push({ x: x + Math.cos(dir) * 20, y: y + Math.sin(dir) * 20, h: 70, text: t, color: c, size: 30, life: 0.5, max: 0.5, comic: true, rot: rand(-0.35, 0.35) });
 }
 function addText(x, y, text, color, size) { run.texts.push({ x, y, text, color, size, life: 0.7, max: 0.7 }); }
 
@@ -1061,7 +1124,7 @@ function updateFx(dt) {
     }
   }
   run.bodies = run.bodies.filter(b => b.life > 0);
-  run.shake = Math.max(0, run.shake - dt * 45);
+  run.shake = Math.max(0, Math.min(10, run.shake) - dt * 55);
   run.zoom = Math.max(0, run.zoom - dt * 0.25);
   run.comboPop = Math.max(0, run.comboPop - dt);
   for (const k in run.skillFlash) run.skillFlash[k] = Math.max(0, run.skillFlash[k] - dt);
@@ -1072,6 +1135,7 @@ function updateFx(dt) {
 // ---------- 主更新 ----------
 function update(dt) {
   updateFx(dt);
+  crowdLevel(0.025 + Math.min(0.09, run.combo * 0.0015));
   if (run.hitstop > 0) { run.hitstop -= dt; return; }
   if (run.slowmo > 0) { run.slowmo -= dt; dt *= 0.3; }
   run.time += dt;
@@ -1101,7 +1165,17 @@ function update(dt) {
   updateProjectiles(dt);
   run.enemies = run.enemies.filter(e => !e.dead);
   if (state === 'play' && run.ult >= run.ultMax && run.enemies.length >= 3) useUlt();
-  if (state === 'play' && run.pendingLevels > 0) openLevelUp();
+  // 暫時關閉技能／強化選單（先看動作流暢度）：升級時自動加一點基本數值，不暫停
+  if (state === 'play' && run.pendingLevels > 0) {
+    if (SKILL_MENU) openLevelUp();
+    else {
+      while (run.pendingLevels > 0) {
+        run.pendingLevels--;
+        run.p.dmgMult += 0.12; run.p.maxHp += 5; run.p.hp = Math.min(run.p.maxHp, run.p.hp + 10);
+      }
+      setBanner(`升級！ Lv ${run.level}`, '#5ef2a0', 0.9);
+    }
+  }
 }
 
 // ---------- 升級三選一 ----------
@@ -1280,16 +1354,19 @@ function setState(s) {
   ultBtn.classList.toggle('hidden', !(s === 'play' || s === 'pause' || s === 'levelup'));
   if (s === 'play') overlay.classList.add('hidden');
 }
-function showOverlay(html) { overlay.innerHTML = html; overlay.classList.remove('hidden'); }
+function showOverlay(html) { overlay.innerHTML = html; overlay.classList.remove('hidden', 'title-screen'); }
 
 function showTitle() {
   run = null;
   setState('title');
   ultBtn.classList.add('hidden');
   showOverlay(`
+    <div class="title-top">
     <p class="sub">ROGUELIKE 拳擊</p>
     <h1>RL FIGHT</h1>
     <p>黃色圈是你的地盤：踏進圈裡的敵人，主角會瞬間衝到他面前用真人功夫拳腳揍飛。<br>打倒敵人升級、挑技能、組元素，撐過一章又一章。</p>
+    </div>
+    <div class="title-bottom">
     <div class="stats">
       <span>最高分</span><span>${save.best}</span>
       <span>最遠進度</span><span>第 ${save.bestChapter || 1} 章 第 ${save.bestWave} 波</span>
@@ -1301,7 +1378,9 @@ function showTitle() {
     </div>
     <p class="small">全自動戰鬥：出拳、技能、爆發都會自己放｜升級時選強化（1 2 3）｜P 暫停　M 靜音</p>
     <p class="small" style="opacity:.55">動作捕捉資料：CMU Graphics Lab Motion Capture Database（mocap.cs.cmu.edu）</p>
+    </div>
   `);
+  overlay.classList.add('title-screen');
 }
 
 function showShop() {
@@ -1414,7 +1493,7 @@ window.addEventListener('keydown', ev => {
   if (ev.repeat) return;
   ensureAudio();
   const k = ev.key.toLowerCase();
-  if (k === 'm') { muted = !muted; return; }
+  if (k === 'm') { setMuted(!muted); return; }
   if (state === 'play') {
     if (k === ' ') { useUlt(); ev.preventDefault(); }
     else if (k === 'p' || k === 'escape') pause();
@@ -1526,8 +1605,11 @@ function drawHUD() {
 }
 
 // 標題畫面用的展示主角
-const demo = { facing: 0, punches: [], hurtT: 0, range: 150 };
-let demoT = 0;
+const TITLE_FACE = Math.PI / 4; // 標題頁主角面向：從鏡頭看往右轉 45 度
+window.TITLE_FACE = TITLE_FACE;
+const demo = { facing: TITLE_FACE, punches: [], hurtT: 0, range: 150 };
+let demoT = 2.5; // 一開始先待機
+let demoLeft = 0;
 
 // 傷害數字與血條（投影到 3D 位置上）
 function drawWorldOverlay() {
@@ -1566,15 +1648,18 @@ function render(dt) {
     // 標題：主角對空揮拳
     demoT -= dt;
     if (demoT <= 0) {
-      demoT = 0.7;
-      const a = rand(0, Math.PI * 2);
+      if (demoLeft <= 0) demoLeft = 3 + Math.floor(Math.random() * 3); // 新的一套：3～5 招
+      demoLeft--;
+      const fin = demoLeft === 0;
+      demoT = demoLeft > 0 ? 0.55 : 3.2;  // 套路中每招間隔 0.55 秒，打完待機 3.2 秒
+      const a = TITLE_FACE + rand(-0.15, 0.15);
       demo.facing = a;
-      demo.punches.push({ tx: Math.cos(a) * 130, ty: Math.sin(a) * 130, side: Math.random() < 0.5 ? 1 : -1, t: 0, dur: 0.3, hitFrac: 0.5 });
+      demo.punches.push({ tx: Math.cos(a) * 130, ty: Math.sin(a) * 130, side: Math.random() < 0.5 ? 1 : -1, t: 0, dur: fin ? 0.4 : 0.3, hitFrac: fin ? 0.6 : 0.5, finisher: fin });
     }
     for (const pu of demo.punches) pu.t += dt;
     demo.punches = demo.punches.filter(pu => pu.t < pu.dur);
   }
-  R3D.render(run, demo, time, run ? run.shake * 0.8 : 0);
+  R3D.render(run, demo, time, run ? run.shake * 0.6 : 0);
   ctx.clearRect(0, 0, SW, SH);
   if (run && (state === 'play' || state === 'pause' || state === 'levelup')) {
     drawWorldOverlay();

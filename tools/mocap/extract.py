@@ -295,7 +295,7 @@ def ik_leg(tk, q, root, side, target):
     q[iL] = qmul(qinv(WU), WL)
     q[iF] = qmul(qinv(WL), wq[iF])
 
-def make_stance(tk, f, n=22, drop=0.07, amp=0.09, arm_lower=0.7):
+def make_stance(tk, f, n=22, drop=0.07, amp=0.09, arm_lower=0.4):
     J, ix = tk.joints, tk.idx
     q0, r0 = tk.q[f].copy(), tk.root[f].copy()
     wp0 = tk.wp[f]
@@ -327,6 +327,14 @@ def make_stance(tk, f, n=22, drop=0.07, amp=0.09, arm_lower=0.7):
         else: hi = mid
     base_lean = lo
     print('架式前傾', round(math.degrees(base_lean), 1), '度，原本頭部位置', round(head_ahead(0), 2))
+    # 手肘往外張的方向：讓手肘離脊椎遠一點
+    abd = {}
+    for side in ('Left', 'Right'):
+        t = q0.copy(); world_rotate(J, t, r0, ix[side + 'Arm'], qaxis1(opp, 0.2))
+        w1, _ = fk(J, t[None], r0[None]); w0, _ = fk(J, q0[None], r0[None])
+        e1 = np.linalg.norm((w1[0][ix[side + 'ForeArm']] - w1[0][ix['Spine1']])[[0, 2]])
+        e0 = np.linalg.norm((w0[0][ix[side + 'ForeArm']] - w0[0][ix['Spine1']])[[0, 2]])
+        abd[side] = 1 if e1 > e0 else -1
     Q, Rt = [], []
     for i in range(n):
         ph = i / n * 2 * math.pi
@@ -338,6 +346,13 @@ def make_stance(tk, f, n=22, drop=0.07, amp=0.09, arm_lower=0.7):
         world_rotate(J, q, r, ix['Spine'], qaxis1(lean_axis, sp_sign * (base_lean + 0.05 * lagb)))
         for side in ('Left', 'Right'):
             world_rotate(J, q, r, ix[side + 'Arm'], qaxis1(lat, signs[side] * (arm_lower + 0.07 * lagb)))
+            world_rotate(J, q, r, ix[side + 'Arm'], qaxis1(opp, abd[side] * 0.45))   # 手肘往外張
+            # 手肘打開一些，拳頭往前推離身體
+            w, _ = fk(J, q[None], r[None]); w = w[0]
+            ua = w[ix[side + 'ForeArm']] - w[ix[side + 'Arm']]; fa = w[ix[side + 'Hand']] - w[ix[side + 'ForeArm']]
+            ax = np.cross(ua, fa)
+            if np.linalg.norm(ax) > 1e-6:
+                world_rotate(J, q, r, ix[side + 'ForeArm'], qaxis1(ax, -0.45))
         for side in ('Left', 'Right'):
             ik_leg(tk, q, r, side, feet[side])
         Q.append(q); Rt.append(r)
@@ -517,16 +532,13 @@ def main():
     react('90_18', 'fallB0', 0.6, 2.2, 0.5, True, part='Head')
     react('90_16', 'fallF0', 3.25, 4.7, 0.5, True, part='Head')
 
-    # 後空翻（連段打完翻回中央用）：蹲下蓄力 → 起跳 → 空中倒立 → 落地站穩
-    # 翻轉的移動方向轉成 -X（往後），水平位移移除（由遊戲把主角移回中央），保留真實跳躍高度
-    for name, key, t0, t1 in [('flipB0', '87_04', 0.8, 1.6), ('flipB1', '87_03', 1.0, 1.85)]:
-        if key not in T: T[key] = Take(src / f'{key}.bvh')
-        tk = T[key]
-        a, b = int(t0 * tk.fps), int(t1 * tk.fps)
-        d = tk.P('Hips')[b] - tk.P('Hips')[a]; d[1] = 0
-        yaw = yaw_to_x(-d)
-        clips[name] = make_clip(tk, a, b, yaw, inplace=True)
-        print(name, key, t0, t1, '後退距離', round(float(np.linalg.norm(d)), 1))
+    # 雙腳往前跳（閒置一秒後跳回中央用）：蹲下蓄力 → 起跳 → 屈膝落地；跳躍方向轉成 +X，水平位移移除
+    if '16_05' not in T: T['16_05'] = Take(src / '16_05.bvh')
+    tk = T['16_05']
+    a, b = int(0.75 * tk.fps), int(2.0 * tk.fps)
+    d = tk.P('Hips')[b] - tk.P('Hips')[a]; d[1] = 0
+    clips['jumpF0'] = make_clip(tk, a, b, yaw_to_x(d), inplace=True)
+    print('跳回', '往前距離', round(float(np.linalg.norm(d)), 1))
 
     # 主角待機：格鬥架式彈動
     T['13_17'] = Take(src / '13_17.bvh')

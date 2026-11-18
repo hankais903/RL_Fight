@@ -89,3 +89,12 @@ body { display: flex; align-items: center; justify-content: center; }
   .card .key, .card .tag { display: none; }
   #overlay h1 { font-size: 2.6em; }
 }
+
+/* 主選單：上下各一塊文字，中間透明讓主角露出來 */
+#overlay.title-screen {
+  justify-content: space-between;
+  background: linear-gradient(rgba(8,8,18,.85) 0%, rgba(8,8,18,.4) 22%, rgba(8,8,18,0) 32%, rgba(8,8,18,0) 66%, rgba(8,8,18,.45) 74%, rgba(8,8,18,.88) 100%);
+  padding-block: max(1em, env(safe-area-inset-top, 0px)) max(1em, env(safe-area-inset-bottom, 0px));
+}
+.title-top, .title-bottom { display: flex; flex-direction: column; align-items: center; gap: .6em; }
+.title-top p, .title-bottom p { text-shadow: 0 1px 3px rgba(0,0,0,.9); }

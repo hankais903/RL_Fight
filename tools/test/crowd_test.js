@@ -23,11 +23,12 @@ const out = process.argv[4] || '.';
     setInterval(() => { const g = __rlfight; if (g.state === 'levelup') g.pick(0); if (g.run.enemies.length < n * 0.5) g.spawnMany(Math.round(n * 0.4)); }, 300);
   }, N);
   await pg.waitForTimeout(5000);
-  await pg.screenshot({ path: path.join(out, `crowd_${mobile ? 'mobile' : 'desktop'}_1.png`) });
+  // 雲端軟體模擬 3D 很慢：截圖時間放寬
+  await pg.screenshot({ timeout: 120000, path: path.join(out, `crowd_${mobile ? 'mobile' : 'desktop'}_1.png`) });
   await pg.waitForFunction(() => R3D.debugPlayer().flying && R3D.debugPlayer().tilt > 60, null, { timeout: 90000, polling: 30 }).catch(() => {});
-  await pg.screenshot({ path: path.join(out, `crowd_${mobile ? 'mobile' : 'desktop'}_flykick.png`) });
+  await pg.screenshot({ timeout: 120000, path: path.join(out, `crowd_${mobile ? 'mobile' : 'desktop'}_flykick.png`) });
   await pg.waitForTimeout(15000);
-  await pg.screenshot({ path: path.join(out, `crowd_${mobile ? 'mobile' : 'desktop'}_2.png`) });
+  await pg.screenshot({ timeout: 120000, path: path.join(out, `crowd_${mobile ? 'mobile' : 'desktop'}_2.png`) });
   const r = await pg.evaluate(() => ({ 敵人: __rlfight.run.enemies.length, 擊倒: __rlfight.run.kills, 繪製: R3D.stats(), 飛踢: __fly }));
   console.log(JSON.stringify(r), errs.length ? '錯誤：' + errs.slice(0, 3).join(' | ') : '沒有錯誤');
   await b.close();
