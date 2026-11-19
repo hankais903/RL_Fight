@@ -7,13 +7,14 @@ extends Node3D
 const MAX_DROPS := 260
 const MAX_SPLATS := 320
 const GRAVITY := 16.0
-const SPLAT_LIFE := 14.0        # 血跡留在地上的秒數（最後三秒淡出）
+const SPLAT_LIFE := 6.0         # 血跡留在地上的秒數（最後兩秒淡出）。原本 14 秒，使用者要快一點消失
 const SAVE_PATH := "user://gore.cfg"
 static var enabled := true
 
 var drops: Array = []          # 飛行中的血滴：{p, v, s}
 var splats: Array = []         # 地上的血跡：{xf, t, a}
 var splat_i := 0
+var splat_live := 0             # 地上還有幾片血跡（沒有血的時候每格什麼都不用做）
 var drop_mm := MultiMesh.new()
 var splat_mm := MultiMesh.new()
 
@@ -35,7 +36,7 @@ func _ready() -> void:
 	sm.radial_segments = 6
 	sm.rings = 3
 	var dm := StandardMaterial3D.new()
-	dm.albedo_color = Color(0.5, 0.02, 0.02)
+	dm.albedo_color = Color(0.28, 0.008, 0.008)
 	dm.roughness = 0.3
 	dm.disable_receive_shadows = true
 	sm.material = dm
@@ -58,7 +59,7 @@ func _ready() -> void:
 	var pm := StandardMaterial3D.new()
 	pm.vertex_color_use_as_albedo = true
 	pm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	pm.albedo_color = Color(0.36, 0.015, 0.015)
+	pm.albedo_color = Color(0.19, 0.005, 0.005)      # 使用者要求比第一版（0.36）更深
 	pm.roughness = 0.35
 	cm.material = pm
 	splat_mm.transform_format = MultiMesh.TRANSFORM_3D
@@ -87,6 +88,7 @@ func burst(pos: Vector3, dir: Vector3, amount: int, power := 1.0) -> void:
 # 清掉所有血（關掉開關時用）
 func clear() -> void:
 	drops.clear()
+	splat_live = 0
 	for i in MAX_SPLATS:
 		splats[i] = null
 		splat_mm.set_instance_color(i, Color(1, 1, 1, 0))
@@ -95,12 +97,16 @@ func _splat(p: Vector3, size: float) -> void:
 	var b := Basis(Vector3.UP, randf() * TAU) * Basis.from_scale(Vector3(size * randf_range(0.7, 1.5), 1.0, size * randf_range(0.7, 1.5)))
 	# 每一片高一點點，疊在一起時才不會閃爍
 	var xf := Transform3D(b, Vector3(p.x, 0.016 + (splat_i % 16) * 0.0006, p.z))
+	if splats[splat_i] == null: splat_live += 1
 	splats[splat_i] = {"t": SPLAT_LIFE}
 	splat_mm.set_instance_transform(splat_i, xf)
 	splat_mm.set_instance_color(splat_i, Color(1, 1, 1, 0.9))
 	splat_i = (splat_i + 1) % MAX_SPLATS
 
 func _process(dt: float) -> void:
+	if drops.is_empty() and splat_live == 0:
+		if drop_mm.visible_instance_count != 0: drop_mm.visible_instance_count = 0
+		return
 	var keep: Array = []
 	for d in drops:
 		var v: Vector3 = d.v
@@ -131,6 +137,7 @@ func _process(dt: float) -> void:
 		var t: float = splats[i].t
 		if t <= 0.0:
 			splats[i] = null
+			splat_live -= 1
 			splat_mm.set_instance_color(i, Color(1, 1, 1, 0))
-		elif t < 3.0:
-			splat_mm.set_instance_color(i, Color(1, 1, 1, 0.9 * t / 3.0))
+		elif t < 2.0:
+			splat_mm.set_instance_color(i, Color(1, 1, 1, 0.9 * t / 2.0))

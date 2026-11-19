@@ -87,6 +87,7 @@ static func build(kind := "grunt", scale_mul := 1.0) -> Dictionary:
 			shared_mat.disable_receive_shadows = true     # 理由同主角：陰影貼圖會在角色身上畫出條紋
 			mats[kind] = shared_mat
 		for i in mi.mesh.get_surface_count(): mi.set_surface_override_material(i, mats[kind])
+		mi.lod_bias = lod_bias
 	var move_speed: float = move_raw[K[1]] * skel.motion_scale * SCALE
 	if kind == "grunt": walk_speed = move_speed
 	var fix := BodyFix.new()
@@ -103,3 +104,4 @@ static func build(kind := "grunt", scale_mul := 1.0) -> Dictionary:
 	return {"node": node, "skel": skel, "anim": anim, "fix": fix, "meshes": meshes, "move": K[1], "move_speed": move_speed, "kind": kind}
 
 static var foot_ik := true      # 測試用開關
+static var lod_bias := 1.0     # 遠距離簡化的傾向（越小越早換成面數少的版本）

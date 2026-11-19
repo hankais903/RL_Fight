@@ -84,6 +84,7 @@ var warmup := 2.5
 func _ready() -> void:
 	TunePanel.load_saved()
 	Gore.load_saved()
+	EnemyRig.lod_bias = 0.5      # 效能：遊戲鏡頭很遠，敵人提早換成面數較少的版本（對照過截圖，看不出差別）；動作檢視器是近看，維持原本的
 	sfx = Sfx.new()
 	add_child(sfx)
 	# 街景與打光
@@ -257,6 +258,7 @@ func spawn_enemy(type: String, pos := Vector3.INF) -> void:
 	var mul: float = {"runner": 0.97, "tank": 1.25}.get(type, 1.0)     # 體型：小嘍囉 1、快腿仔幾乎一樣、肉盾比較大
 	var rig := EnemyRig.build(type, mul)                 # 小嘍囉用走的、快腿仔用跑的；肉盾還沒有自己的模型，先用小嘍囉
 	var node: Node3D = rig.node
+	(rig.fix as BodyFix).legs_ik = close_cam          # 效能：遠鏡頭下只把整個人抬到地面上，不逐腳修正（近照測試時才開）
 	add_child(node)
 	street.add_character(node, r * 1.5, false)        # 吃角色的光、腳下有接地暗影
 	if pos == Vector3.INF:
@@ -677,8 +679,11 @@ func _process(delta: float) -> void:
 	_update_camera(dt)
 	hud_hp.max_value = max_hp
 	hud_hp.value = hp
-	hud_top.text = "第 1 章　第 %d 波　擊倒 %d" % [wave, kills]
-	hud_info.text = "版本 %d　%s・%s　每秒 %d 格　畫質：%s%s" % [HeroRig.BUILD, street.phase_name(), street.weather_name(), roundi(fps_now), Street.QUALITY_NAMES[street.quality], "（自動）" if auto_quality else ""]
+	# 效能：文字有變才重設（每格都設會讓文字重新排版）
+	var top := "第 1 章　第 %d 波　擊倒 %d" % [wave, kills]
+	if hud_top.text != top: hud_top.text = top
+	var info := "版本 %d　%s・%s　每秒 %d 格　畫質：%s%s" % [HeroRig.BUILD, street.phase_name(), street.weather_name(), roundi(fps_now), Street.QUALITY_NAMES[street.quality], "（自動）" if auto_quality else ""]
+	if hud_info.text != info: hud_info.text = info
 	if banner_t > 0.0:
 		banner_t -= dt
 		if banner_t <= 0.0: hud_banner.text = ""
@@ -706,6 +711,8 @@ func _test_args() -> void:
 	var args := OS.get_cmdline_user_args()
 	if not args.is_empty(): auto_quality = false   # 測試截圖時固定用高畫質
 	for a in args:
+		if a.begins_with("--lod="): EnemyRig.lod_bias = float(a.split("=")[1])
+	for a in args:
 		if a == "--god": god = true
 		elif a == "--close": close_cam = true
 		elif a.begins_with("--weather="): street.set_weather(a.split("=")[1], true)
@@ -720,6 +727,9 @@ func _test_args() -> void:
 			for i in int(a.split("=")[1]):
 				var roll := randf()
 				spawn_enemy("tank" if roll < 0.1 else ("runner" if roll < 0.3 else "grunt"))
+		elif a.begins_with("--perf="):
+			# 效能量測：跑這麼多秒後印出平均的繪製次數、三角形數、每格運算時間
+			_perf(float(a.split("=")[1]))
 		elif a.begins_with("--shots="):
 			for s in a.split("=")[1].split(","): shots.append(float(s))
 	if shots.is_empty(): return
@@ -730,4 +740,22 @@ func _test_args() -> void:
 		get_viewport().get_texture().get_image().save_png("user://shot_%d.png" % i)
 		print("截圖 %d 秒：敵人 %d 擊倒 %d 血量 %d｜主角身體離中心最遠 %.2f 公尺（上限 %.2f）｜敵人被推動的最大速度 %.2f｜敵人出拳 %d 次、打中主角 %d 次、出拳時超出攻擊距離最多 %.2f 公尺" % [s, enemies.size(), kills, hp, dbg_far, attack_range - BODY_HALF, dbg_push, dbg_punches, dbg_hurts, dbg_far_punch])
 		i += 1
+	get_tree().quit()
+
+# 效能量測（測試用）：暖機 2 秒後取樣，印出平均值。這個雲端環境沒有顯示卡，畫面張數不準，
+# 但繪製次數、三角形數、程式運算時間是準的，可以拿來比較修改前後
+func _perf(sec: float) -> void:
+	await get_tree().create_timer(2.0).timeout
+	var n := 0
+	var dc := 0.0
+	var prim := 0.0
+	var proc := 0.0
+	var t0 := Time.get_ticks_msec()
+	while Time.get_ticks_msec() - t0 < sec * 1000.0:
+		await get_tree().process_frame
+		n += 1
+		dc += Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)
+		prim += Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME)
+		proc += Performance.get_monitor(Performance.TIME_PROCESS)
+	print("效能：%d 格｜敵人 %d｜繪製次數 %.0f｜三角形 %.0f 千｜每格運算 %.2f 毫秒｜物件數 %d｜節點數 %d" % [n, enemies.size(), dc / n, prim / n / 1000.0, proc / n * 1000.0, Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME), Performance.get_monitor(Performance.OBJECT_NODE_COUNT)])
 	get_tree().quit()

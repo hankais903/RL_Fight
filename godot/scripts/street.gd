@@ -103,7 +103,46 @@ func _init() -> void:
 	_build_buildings()
 	_build_props()
 	_build_backdrop()
+	_merge_static()
 	set_tod("day")
+
+# 效能：把場景裡「同一個材質、同樣設定」的靜態物件合併成一個網格，一次畫完。
+# 場景原本是幾百個各自獨立的方塊、圓柱，每個都要單獨送一次繪製指令（陰影每一段還要再送一次），
+# 手機的繪圖晶片最怕這個。合併後外觀完全一樣（頂點、材質都沒變），只是送的次數少很多。
+# 只合併不透明的標準材質；透明的、用著色器的、有登記用途（meta）的都不動。
+func _merge_static() -> void:
+	var groups := {}
+	for c in get_children():
+		var mi := c as MeshInstance3D
+		if mi == null or mi.get_child_count() > 0 or not mi.visible or mi.mesh == null or mi.mesh.get_surface_count() != 1: continue
+		var metas := mi.get_meta_list()
+		if metas.size() > 1 or (metas.size() == 1 and metas[0] != &"snow"): continue
+		var mat := mi.get_active_material(0) as StandardMaterial3D
+		if mat == null or mat.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED or mat.billboard_mode != BaseMaterial3D.BILLBOARD_DISABLED: continue
+		if mi.material_overlay != null or mi.skin != null: continue
+		var fmt := (mi.mesh as ArrayMesh).surface_get_format(0) if mi.mesh is ArrayMesh else -1
+		var key := "%d|%d|%d|%s|%d|%s" % [mat.get_instance_id(), mi.cast_shadow, mi.layers, mi.has_meta("snow"), fmt, mi.gi_mode]
+		if not groups.has(key): groups[key] = []
+		groups[key].append(mi)
+	for key in groups:
+		var list: Array = groups[key]
+		if list.size() < 2: continue
+		var first: MeshInstance3D = list[0]
+		var st := SurfaceTool.new()
+		for m in list:
+			var mi: MeshInstance3D = m
+			st.append_from(mi.mesh, 0, mi.transform)
+		var merged := MeshInstance3D.new()
+		merged.mesh = st.commit()
+		merged.material_override = first.get_active_material(0)
+		merged.cast_shadow = first.cast_shadow
+		merged.layers = first.layers
+		merged.gi_mode = first.gi_mode
+		if first.has_meta("snow"): merged.set_meta("snow", true)
+		add_child(merged)
+		for m in list:
+			remove_child(m)
+			(m as Node).free()
 
 # ---------------- 材質 ----------------
 func _tex(n: String) -> Texture2D:
@@ -167,7 +206,8 @@ func add_character(node: Node3D, radius := 0.55, main := true) -> void:
 	var pm := PlaneMesh.new()
 	pm.size = Vector2(radius * 2.0, radius * 2.0)
 	blob.mesh = pm
-	blob.material_override = contact_mat(0.05, 0.05)
+	if char_blob_mat == null: char_blob_mat = contact_mat(0.05, 0.05)     # 所有角色共用一份，不要每生一隻就多一個材質
+	blob.material_override = char_blob_mat
 	blob.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	blob.position.y = 0.02
 	blob.top_level = true
@@ -175,19 +215,27 @@ func add_character(node: Node3D, radius := 0.55, main := true) -> void:
 	add_child(blob)
 	blob.set_meta("follow", node)
 	blob.set_meta("main", main)
+	blobs.append(blob)
 	set_process(true)
+
+var char_blob_mat: Material = null
+var blobs: Array = []          # 所有角色腳下的接地暗影（每格只更新這些，不必掃過整個場景）
 
 func _process(dt: float) -> void:
 	var target := 1.0
-	for c in get_children():
-		if c.has_meta("follow"):
-			var n: Node3D = c.get_meta("follow")
-			if not is_instance_valid(n) or n.is_queued_for_deletion() or n.has_meta("down"):
-				c.queue_free()     # 角色不在了，腳下的暗影一起清掉
-				continue
-			(c as Node3D).global_position = Vector3(n.global_position.x, 0.02, n.global_position.z)
-			(c as Node3D).visible = n.global_position.y < 0.3   # 被打飛到空中時不畫
-			if c.get_meta("main", true): target = lit_amount(n.global_position)
+	var gone := false
+	for c in blobs:
+		var n = c.get_meta("follow")
+		if not is_instance_valid(n) or n.is_queued_for_deletion() or n.has_meta("down"):
+			c.queue_free()     # 角色不在了，腳下的暗影一起清掉
+			c.set_meta("gone", true)
+			gone = true
+			continue
+		var np: Vector3 = (n as Node3D).global_position
+		(c as Node3D).global_position = Vector3(np.x, 0.02, np.z)
+		(c as Node3D).visible = np.y < 0.3   # 被打飛到空中時不畫
+		if c.get_meta("main", true): target = lit_amount(np)
+	if gone: blobs = blobs.filter(func(b): return not b.has_meta("gone"))
 	# 進出建築影子時平滑過渡
 	char_lit = lerpf(char_lit, target, minf(1.0, dt * 7.0))
 	char_key.light_energy = key_base * char_lit
@@ -538,11 +586,20 @@ func _params(name: String) -> Dictionary:
 # 直接切到某個時段
 func set_tod(name: String) -> void:
 	tod = name
+	time_sig.x = -9.0      # 讓下一次 set_time 一定會重算
 	_apply(_params(name))
 
 # 連續的日夜變化：x 是一輪裡的位置（0～1），在相鄰兩個關鍵時刻之間平滑內插
+var time_sig := Vector4(-9, 0, 0, 0)
+var time_wsig := Vector4.ZERO
 func set_time(x: float) -> void:
 	x = fposmod(x, 1.0)
+	# 效能：這個函式每格都會被呼叫，但光線一輪要三分鐘，一格的變化小到看不出來。
+	# 時間前進不到一輪的兩千分之一（三分鐘一輪時約 0.09 秒）、天氣也沒在變的話，就沿用上一次的結果
+	var wsig := Vector4(rain_now, wet_now, snow_now, cover_now)
+	if absf(x - time_sig.x) < 0.0005 and wsig == time_wsig and int(time_sig.y) == quality: return
+	time_sig = Vector4(x, quality, 0, 0)
+	time_wsig = wsig
 	var i := 0
 	while i < CYCLE.size() - 2 and x >= CYCLE[i + 1][0]: i += 1
 	var a: Dictionary = _params(CYCLE[i][1])

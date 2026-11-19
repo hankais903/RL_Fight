@@ -24,6 +24,7 @@ const LEASH := 0.05             # 踩地時前腳掌可以離固定點多遠；�
 static var dbg := ""            # 測試用：字串裡有 l／r／y／t／h 就關掉固定、歪斜、高度、腳趾、硬性不穿地
 var head_lift := 1.0             # 抬頭修正的比例（主角 1；敵人不需要就設 0）
 var foot_ik := true
+var legs_ik := true            # 效能：關掉後只做「整個人抬高」，不逐腳修正。遊戲裡遠鏡頭下的大批敵人用（修正量不到一個像素）
 var foot_lock := true           # 固定踩地的前腳掌（角色本身在移動時要關掉，例如衝刺）
 var legs: Array = []
 var hips := -1
@@ -97,6 +98,7 @@ func _process_modification() -> void:
 	var hp := sk.get_bone_global_pose(hips)
 	hp.origin.y += hips_raise
 	sk.set_bone_global_pose(hips, hp)
+	if not legs_ik: return
 	# ---- 腳 ----
 	var xf := sk.global_transform
 	var inv := xf.affine_inverse()
