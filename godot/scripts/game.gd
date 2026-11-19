@@ -17,7 +17,7 @@ const JUMPS := [0.06, 0.48, 0.7]   # 按「時段」時依序跳到：白天、�
 const ENEMY_TYPES := {
 	"grunt":  {"name": "小嘍囉", "hp": 5.0,  "speed": 58.0,  "dmg": 2.0, "r": 15.0, "color": Color("d9534f"), "mass": 1.0},
 	"runner": {"name": "快腿仔", "hp": 4.0,  "speed": 140.0, "dmg": 2.0, "r": 13.0, "color": Color("f0883e"), "mass": 0.8},
-	"tank":   {"name": "肉盾",   "hp": 24.0, "speed": 36.0,  "dmg": 6.0, "r": 24.0, "color": Color("8e5bd1"), "mass": 3.0},
+	"tank":   {"name": "肉盾",   "hp": 24.0, "speed": 44.0,  "dmg": 6.0, "r": 24.0, "color": Color("8e5bd1"), "mass": 3.0},
 }
 
 var street: Plaza
@@ -129,6 +129,7 @@ func _ready() -> void:
 	add_child(gore)
 	_build_hud()
 	_test_args()
+	_start_gate()
 
 # ---------------- 介面 ----------------
 func _build_hud() -> void:
@@ -256,9 +257,10 @@ func spawn_enemy(type: String, pos := Vector3.INF) -> void:
 	var T: Dictionary = ENEMY_TYPES[type]
 	var r: float = T.r * U
 	var mul: float = {"runner": 0.97, "tank": 1.25}.get(type, 1.0)     # 體型：小嘍囉 1、快腿仔幾乎一樣、肉盾比較大
-	var rig := EnemyRig.build(type, mul)                 # 小嘍囉用走的、快腿仔用跑的；肉盾還沒有自己的模型，先用小嘍囉
+	var rig := EnemyRig.build(type, mul)                 # 小嘍囉用走的、快腿仔用跑的、肉盾有自己的模型和沉重的走路
 	var node: Node3D = rig.node
-	(rig.fix as BodyFix).legs_ik = close_cam          # 效能：遠鏡頭下只把整個人抬到地面上，不逐腳修正（近照測試時才開）
+	(rig.fix as BodyFix).legs_ik = close_cam or type == "tank"     # 肉盾數量少、體型大，原始動作穿地較深，保留逐腳修正
+	# （其餘敵人）效能：遠鏡頭下只把整個人抬到地面上，不逐腳修正（近照測試時才開）
 	add_child(node)
 	street.add_character(node, r * 1.5, false)        # 吃角色的光、腳下有接地暗影
 	if pos == Vector3.INF:
@@ -402,7 +404,7 @@ func _damage(e: Dictionary, amount: float, dir: Vector3, kb: float, level: int, 
 	var at: Vector3 = e.pos + Vector3(0, e.r * 2.6, 0) - dir * e.r
 	_impact_fx(at, dir, level if main else 0)
 	# 噴血（血腥表現開著才有）：越重的一擊噴越多、越遠；打倒的那一下再多一些
-	gore.burst(at, dir, [5, 8, 13, 20][level] + (10 if e.hp <= 0.0 else 0), [0.8, 0.9, 1.1, 1.35][level])
+	gore.burst(at, dir, [10, 14, 22, 32][level] + (16 if e.hp <= 0.0 else 0), [1.0, 1.1, 1.3, 1.6][level])
 	_number(e.pos + Vector3(0, e.r * 5.0, 0), amount, level >= 2 and main)
 	if main:
 		hitstop = maxf(hitstop, f[0] * HeroRig.HITSTOP_SCALE)
@@ -759,3 +761,33 @@ func _perf(sec: float) -> void:
 		proc += Performance.get_monitor(Performance.TIME_PROCESS)
 	print("效能：%d 格｜敵人 %d｜繪製次數 %.0f｜三角形 %.0f 千｜每格運算 %.2f 毫秒｜物件數 %d｜節點數 %d" % [n, enemies.size(), dc / n, prim / n / 1000.0, proc / n * 1000.0, Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME), Performance.get_monitor(Performance.OBJECT_NODE_COUNT)])
 	get_tree().quit()
+
+# 開場的「點一下開始」：瀏覽器規定使用者點過畫面之前網頁不能出聲，直接開打的話前面一段會沒有聲音
+# （使用者回報「剛開遊戲都沒聲音，按了下面的功能才有」）。所以網頁版先停在這個畫面，點了才開始。
+# 倒下後重新開始、從動作檢視器回來都不會再出現；帶測試參數啟動也不會出現
+static var started := false
+func _start_gate() -> void:
+	if started or not OS.has_feature("web") or not OS.get_cmdline_user_args().is_empty(): return
+	var layer := CanvasLayer.new()
+	layer.layer = 50
+	layer.process_mode = Node.PROCESS_MODE_ALWAYS
+	add_child(layer)
+	var b := Button.new()
+	b.set_anchors_preset(Control.PRESET_FULL_RECT)
+	b.text = "點一下開始"
+	b.add_theme_font_size_override("font_size", 56)
+	b.add_theme_font_override("font", load("res://assets/fonts/NotoSansTC.ttf"))
+	b.focus_mode = Control.FOCUS_NONE
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0, 0, 0, 0.55)
+	for st in ["normal", "hover", "pressed"]: b.add_theme_stylebox_override(st, sb)
+	layer.add_child(b)
+	# 暫停前先把鏡頭和光線擺好，背景才是正常的遊戲畫面
+	street.set_time(day_t)
+	_update_camera(1.0 / 30.0)
+	anim.advance(0.0)          # 主角先擺出待機姿勢，不然暫停時是張開雙手的原始站姿
+	get_tree().paused = true
+	b.pressed.connect(func():
+		started = true
+		get_tree().paused = false
+		layer.queue_free())

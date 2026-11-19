@@ -44,7 +44,7 @@ var enemy_walk := false        # 敵人是否真的往前走（看腳有沒有�
 var foot_low := [0.0, 0.0]     # 兩隻腳鞋底離地的高度（公分）；要在骨架更新完（腳的修正套用後）才量，不然讀到的是修正前的
 var foot_dbg := false          # 顯示腳的量測數字
 var tune: TunePanel
-var test_voff := -0.7
+var test_voff := -0.95
 var test_bias := -1.0
 var ref: Node3D = null   # 對照用：動作檔原本的骨架模型
 
@@ -160,13 +160,15 @@ func _build_ui() -> void:
 		row3.add_child(b)
 	var row5 := HBoxContainer.new()
 	box.add_child(row5)
-	for item in [["主角", _subject.bind(false)], ["小嘍囉", _enemy_kind.bind("grunt")], ["快腿仔", _enemy_kind.bind("runner")], ["敵被打", _enemy_anim.bind("hit")], ["敵出拳", _enemy_anim.bind("punch")], ["敵倒下", _enemy_anim.bind("fall")], ["腳貼地", _toggle_ik]]:
+	var row6 := HBoxContainer.new()
+	box.add_child(row6)
+	for item in [["主角", _subject.bind(false), row5], ["小嘍囉", _enemy_kind.bind("grunt"), row5], ["快腿仔", _enemy_kind.bind("runner"), row5], ["肉盾", _enemy_kind.bind("tank"), row5], ["敵被打", _enemy_anim.bind("hit"), row6], ["敵出拳", _enemy_anim.bind("punch"), row6], ["敵倒下", _enemy_anim.bind("fall"), row6], ["腳貼地", _toggle_ik, row6]]:
 		var b := Button.new()
 		b.text = item[0]
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		b.custom_minimum_size.y = 70
 		b.pressed.connect(item[1])
-		row5.add_child(b)
+		(item[2] as HBoxContainer).add_child(b)
 	var row4 := HBoxContainer.new()
 	box.add_child(row4)
 	for item in [["晴天", _weather.bind("clear")], ["下雨", _weather.bind("rain")], ["雨後", _weather.bind("after")], ["下雪", _weather.bind("snow")], ["積雪", _weather.bind("snowed")]]:
@@ -251,7 +253,7 @@ func _enemy_kind(kind: String) -> void:
 # 敵人的動作：走路會真的往前走（來回一段路，鏡頭跟著），這樣才看得出腳有沒有在地上滑
 func _enemy_anim(k: String) -> void:
 	_subject(true)
-	if k == "walk" or k == "run": k = enemy.move
+	if k == "walk" or k == "run" or k == "walk_tank": k = enemy.move
 	enemy_walk = k == enemy.move
 	enemy_cur = k
 	(enemy.fix as BodyFix).foot_ik = k != "fall"     # 躺下時腳貼地要關掉

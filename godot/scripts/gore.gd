@@ -4,10 +4,11 @@ extends Node3D
 # 血滴和血跡各用一個多重網格批次繪製，數量有上限（循環使用最舊的），一次很多敵人也不會慢。
 # 開關是靜態變數 Gore.enabled，存在 user://gore.cfg；關掉時 burst() 什麼都不做。
 
-const MAX_DROPS := 260
+const MAX_DROPS := 520
 const MAX_SPLATS := 320
 const GRAVITY := 16.0
 const SPLAT_LIFE := 6.0         # 血跡留在地上的秒數（最後兩秒淡出）。原本 14 秒，使用者要快一點消失
+const SPLAT_RATE := 0.55       # 落地的血滴有多少比例會留下血跡
 const SAVE_PATH := "user://gore.cfg"
 static var enabled := true
 
@@ -79,11 +80,43 @@ func _ready() -> void:
 # 噴血：pos 是命中點，dir 是出拳方向（血往那邊噴），amount 是血滴數量，power 是力道（越大噴越遠）
 func burst(pos: Vector3, dir: Vector3, amount: int, power := 1.0) -> void:
 	if not enabled: return
+	_mist(pos, dir, power)
 	for i in amount:
 		if drops.size() >= MAX_DROPS: drops.pop_front()
 		var d := (dir + Vector3(randf_range(-0.55, 0.55), 0.0, randf_range(-0.55, 0.55))).normalized()
 		var v := d * randf_range(1.2, 4.6) * power + Vector3(0, randf_range(0.6, 3.6) * power, 0)
-		drops.append({"p": pos + Vector3(randf_range(-0.08, 0.08), randf_range(-0.1, 0.1), randf_range(-0.08, 0.08)), "v": v, "s": randf_range(0.035, 0.085)})
+		drops.append({"p": pos + Vector3(randf_range(-0.08, 0.08), randf_range(-0.1, 0.1), randf_range(-0.08, 0.08)), "v": v, "s": randf_range(0.06, 0.15), "mark": randf() < SPLAT_RATE})
+
+# 命中瞬間的一團血霧：幾顆暗紅色的球從命中點順著出拳方向迅速膨脹、淡掉。
+# 光靠小血滴在遠鏡頭下不夠明顯（使用者要求噴血更明顯），這一團是讓人一眼看到「噴了」的主體
+var mist_mesh: SphereMesh = null
+func _mist(pos: Vector3, dir: Vector3, power: float) -> void:
+	if mist_mesh == null:
+		mist_mesh = SphereMesh.new()
+		mist_mesh.radius = 0.5
+		mist_mesh.height = 1.0
+		mist_mesh.radial_segments = 10
+		mist_mesh.rings = 5
+	for i in 4:
+		var m := MeshInstance3D.new()
+		m.mesh = mist_mesh
+		var mt := StandardMaterial3D.new()
+		mt.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mt.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mt.albedo_color = Color(0.33, 0.0, 0.0, 0.8)
+		m.material_override = mt
+		m.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		var d := (dir + Vector3(randf_range(-0.5, 0.5), randf_range(0.0, 0.5), randf_range(-0.5, 0.5))).normalized()
+		m.position = pos + d * 0.1
+		m.scale = Vector3.ONE * 0.18
+		add_child(m)
+		var size := randf_range(0.45, 0.8) * power
+		var tw := create_tween()
+		tw.set_parallel(true)
+		tw.tween_property(m, "position", pos + d * randf_range(0.5, 1.1) * power, 0.22).set_ease(Tween.EASE_OUT)
+		tw.tween_property(m, "scale", Vector3.ONE * size, 0.22).set_ease(Tween.EASE_OUT)
+		tw.tween_property(mt, "albedo_color:a", 0.0, 0.24).set_ease(Tween.EASE_IN)
+		tw.chain().tween_callback(m.queue_free)
 
 # 清掉所有血（關掉開關時用）
 func clear() -> void:
@@ -113,7 +146,9 @@ func _process(dt: float) -> void:
 		v.y -= GRAVITY * dt
 		var p: Vector3 = d.p + v * dt
 		if p.y <= 0.02:
-			_splat(p, (d.s as float) * randf_range(2.2, 4.5))      # 落地：留下一片血跡
+			# 落地：留下一片血跡。空中的血滴後來加大加多了，但地上的血跡使用者要維持第一版的量和大小，
+			# 所以只有一部分血滴會留痕，大小也照第一版的範圍
+			if d.mark: _splat(p, randf_range(0.035, 0.085) * randf_range(2.2, 4.5))
 			continue
 		d.v = v
 		d.p = p

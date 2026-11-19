@@ -10,9 +10,10 @@ const HIPS_RAISE := 0.009      # 整個人抬高的量（模型單位），用 t
 const KINDS := {
 	"grunt": ["res://assets/enemy/badguy_1.glb", "walk", 0.009],      # 小嘍囉：走路
 	"runner": ["res://assets/enemy/badguy_2.glb", "run", 0.006],      # 快腿仔：跑步
+	"tank": ["res://assets/enemy/badguy_3.glb", "walk_tank", 0.009],  # 肉盾：自己的走路動作（步伐沉重）
 }
 # 動作：[檔案, 中文名, 是否循環]。出拳直接用主角的直拳動作檔（主角和敵人是同一套骨架對照，可以共用）
-const ANIMS := {"walk": ["res://assets/enemy/walk.fbx", "走路", true], "run": ["res://assets/enemy/run.fbx", "跑步", true], "hit": ["res://assets/enemy/hit.fbx", "被打", false], "punch": ["res://assets/anims/cross_punch.fbx", "出拳", false], "fall": ["res://assets/enemy/fall.fbx", "倒下", false]}
+const ANIMS := {"walk": ["res://assets/enemy/walk.fbx", "走路", true], "run": ["res://assets/enemy/run.fbx", "跑步", true], "walk_tank": ["res://assets/enemy/walk_tank.fbx", "走路", true], "hit": ["res://assets/enemy/hit.fbx", "被打", false], "punch": ["res://assets/anims/cross_punch.fbx", "出拳", false], "fall": ["res://assets/enemy/fall.fbx", "倒下", false]}
 # 倒下的動作：往後倒、躺平（約第 50 格躺好）。身體的位移是動作的一部分，要完整保留
 const FALL_ENTER := 6
 const FALL_DOWN := 52
