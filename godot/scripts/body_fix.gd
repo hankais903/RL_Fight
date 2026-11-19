@@ -22,6 +22,7 @@ const SMOOTH := 16.0             # 修正量緩衝的速度（越大越跟手、
 const LEASH := 0.05             # 踩地時前腳掌可以離固定點多遠；超過代表動作真的要它移動，固定點跟著走
 
 static var dbg := ""            # 測試用：字串裡有 l／r／y／t／h 就關掉固定、歪斜、高度、腳趾、硬性不穿地
+var head_lift := 1.0             # 抬頭修正的比例（主角 1；敵人不需要就設 0）
 var foot_ik := true
 var foot_lock := true           # 固定踩地的前腳掌（角色本身在移動時要關掉，例如衝刺）
 var legs: Array = []
@@ -85,12 +86,12 @@ func _process_modification() -> void:
 	var sk := get_skeleton()
 	if sk == null: return
 	# ---- 頭抬高 ----
-	if neck >= 0 and head >= 0:
+	if neck >= 0 and head >= 0 and head_lift > 0.0:
 		var left := (sk.get_bone_global_pose(sh_l).origin - sk.get_bone_global_pose(sh_r).origin).normalized()
 		var nk := sk.get_bone_global_pose(neck)
-		sk.set_bone_global_pose(neck, Transform3D(Basis(Quaternion(left, deg_to_rad(-HEAD_LIFT_NECK))) * nk.basis, nk.origin))
+		sk.set_bone_global_pose(neck, Transform3D(Basis(Quaternion(left, deg_to_rad(-HEAD_LIFT_NECK * head_lift))) * nk.basis, nk.origin))
 		var hd := sk.get_bone_global_pose(head)
-		sk.set_bone_global_pose(head, Transform3D(Basis(Quaternion(left, deg_to_rad(-HEAD_LIFT_HEAD))) * hd.basis, hd.origin))
+		sk.set_bone_global_pose(head, Transform3D(Basis(Quaternion(left, deg_to_rad(-HEAD_LIFT_HEAD * head_lift))) * hd.basis, hd.origin))
 	if not foot_ik: return
 	# ---- 整個人抬高鞋底的厚度差 ----
 	var hp := sk.get_bone_global_pose(hips)

@@ -21,11 +21,10 @@ var combo_t := 0.0
 var combo_rest := 0.0
 var hit_flash := 0.0
 var hit_done := false
-var combo_speed := 1.2
 var we: WorldEnvironment
 var studio_env: Environment
 var studio: Node3D            # 攝影棚（灰背景、格線地板）
-var street: Street = null     # 街景（要用時才建立）
+var street: Plaza = null     # 街景（要用時才建立）
 var far_view := false         # 遠景：用遊戲的俯視鏡頭看整個場景
 var auto_quality := true      # 每秒畫面數太低時自動降畫質
 var fps_t := 0.0
@@ -33,6 +32,18 @@ var fps_n := 0
 var fps_now := 60.0
 var warmup := 2.5
 var sky_shot := false
+# ---- 敵人檢視 ----
+var hero_fix: BodyFix
+var enemy = null               # 目前檢視的敵人（EnemyRig.build() 的結果）
+var enemy_rigs := {}           # 種類 → 建好的敵人（第一次切過去才建立）
+var hero_anim: AnimationPlayer
+var subject: Node3D            # 目前在看的角色（主角或敵人）
+var enemy_cur := "walk"
+var fall_cam := Vector3(0, 0.95, 0)
+var enemy_walk := false        # 敵人是否真的往前走（看腳有沒有滑）
+var foot_low := [0.0, 0.0]     # 兩隻腳鞋底離地的高度（公分）；要在骨架更新完（腳的修正套用後）才量，不然讀到的是修正前的
+var foot_dbg := false          # 顯示腳的量測數字
+var tune: TunePanel
 var test_voff := -0.7
 var test_bias := -1.0
 var ref: Node3D = null   # 對照用：動作檔原本的骨架模型
@@ -76,8 +87,12 @@ func _ready() -> void:
 	HeroRig.smooth_normals = OS.get_cmdline_user_args().has("--smooth")
 	var h := HeroRig.build()
 	hero = h.node
+	subject = hero
+	hero_fix = h.fix
+	h.skel.skeleton_updated.connect(_foot_sample.bind(h))
 	skel = h.skel
 	anim = h.anim
+	hero_anim = anim
 	add_child(hero)
 	anim.animation_finished.connect(_on_finished)
 	_build_ui()
@@ -106,6 +121,10 @@ func _build_ui() -> void:
 	root.set_anchors_preset(Control.PRESET_FULL_RECT)
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(root)
+	TunePanel.load_saved()
+	tune = TunePanel.new()
+	tune.offset_bottom = -450   # 疊在按鈕區上方
+	root.add_child(tune)
 	info = Label.new()
 	info.position = Vector2(20, 14)
 	info.add_theme_color_override("font_outline_color", Color.BLACK)
@@ -139,9 +158,27 @@ func _build_ui() -> void:
 		b.custom_minimum_size.y = 70
 		b.pressed.connect(item[1])
 		row3.add_child(b)
+	var row5 := HBoxContainer.new()
+	box.add_child(row5)
+	for item in [["主角", _subject.bind(false)], ["小嘍囉", _enemy_kind.bind("grunt")], ["快腿仔", _enemy_kind.bind("runner")], ["敵被打", _enemy_anim.bind("hit")], ["敵出拳", _enemy_anim.bind("punch")], ["敵倒下", _enemy_anim.bind("fall")], ["腳貼地", _toggle_ik]]:
+		var b := Button.new()
+		b.text = item[0]
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.custom_minimum_size.y = 70
+		b.pressed.connect(item[1])
+		row5.add_child(b)
+	var row4 := HBoxContainer.new()
+	box.add_child(row4)
+	for item in [["晴天", _weather.bind("clear")], ["下雨", _weather.bind("rain")], ["雨後", _weather.bind("after")], ["下雪", _weather.bind("snow")], ["積雪", _weather.bind("snowed")]]:
+		var b := Button.new()
+		b.text = item[0]
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.custom_minimum_size.y = 70
+		b.pressed.connect(item[1])
+		row4.add_child(b)
 	var row2 := HBoxContainer.new()
 	box.add_child(row2)
-	for item in [["連段：舊播法", _combo.bind("old")], ["連段：新播法", _combo.bind("new")], ["畫質", _cycle_quality]]:
+	for item in [["連段：舊播法", _combo.bind("old")], ["連段：新播法", _combo.bind("new")], ["速度", _toggle_tune], ["畫質", _cycle_quality], ["回遊戲", _back_to_game], ["重整", HeroRig.reload_page.bind(get_tree())]]:
 		var b := Button.new()
 		b.text = item[0]
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -167,7 +204,7 @@ func _scene(tod: String) -> void:
 		far_view = false
 		return
 	if street == null:
-		street = Street.new()
+		street = Plaza.new()
 		add_child(street)
 		street.add_character(hero)
 	street.visible = true
@@ -175,6 +212,68 @@ func _scene(tod: String) -> void:
 	street.set_tod(tod)
 	studio.visible = false
 	we.environment = street.env
+
+func _foot_sample(who: Dictionary) -> void:
+	if (who.node as Node3D) != subject: return
+	var f: BodyFix = who.fix
+	var sk2: Skeleton3D = who.skel
+	for i in 2:
+		var lg: Dictionary = f.legs[i]
+		var fp := sk2.get_bone_global_pose(lg.foot)
+		var fb := fp.basis.orthonormalized()
+		foot_low[i] = minf((fp.origin + fb * (lg.ball_local as Vector3)).y, (fp.origin + fb * (lg.heel_local as Vector3)).y) * subject.scale.y * 100.0
+
+# 切換檢視的對象：主角或敵人
+func _subject(want_enemy: bool) -> void:
+	if want_enemy and enemy == null: _build_enemy("grunt")
+	hero.visible = not want_enemy
+	for k in enemy_rigs: (enemy_rigs[k].node as Node3D).visible = want_enemy and enemy_rigs[k] == enemy
+	subject = enemy.node if want_enemy else hero
+	anim = enemy.anim if want_enemy else hero_anim
+	combo_mode = ""
+	paused = false
+
+func _build_enemy(kind: String) -> void:
+	if not enemy_rigs.has(kind):
+		var e := EnemyRig.build(kind)
+		add_child(e.node)
+		if street != null: street.add_character(e.node, 0.5, false)
+		(e.anim as AnimationPlayer).animation_finished.connect(_enemy_finished)
+		(e.skel as Skeleton3D).skeleton_updated.connect(_foot_sample.bind(e))
+		enemy_rigs[kind] = e
+	enemy = enemy_rigs[kind]
+
+# 換一種敵人來看，並播它移動的動作（小嘍囉走路、快腿仔跑步）
+func _enemy_kind(kind: String) -> void:
+	_build_enemy(kind)
+	_enemy_anim(enemy.move)
+
+# 敵人的動作：走路會真的往前走（來回一段路，鏡頭跟著），這樣才看得出腳有沒有在地上滑
+func _enemy_anim(k: String) -> void:
+	_subject(true)
+	if k == "walk" or k == "run": k = enemy.move
+	enemy_walk = k == enemy.move
+	enemy_cur = k
+	(enemy.fix as BodyFix).foot_ik = k != "fall"     # 躺下時腳貼地要關掉
+	(enemy.node as Node3D).position = Vector3.ZERO
+	anim.play(k, 0.15)
+
+func _enemy_finished(_n: StringName) -> void:
+	# 被打的動作播完：停一下再重播
+	await get_tree().create_timer((1.2 if enemy_cur == "fall" else 0.5) / maxf(0.1, speed)).timeout
+	if subject != hero and not enemy_walk: anim.play(enemy_cur, 0.0 if enemy_cur == "fall" else 0.15)
+
+# 腳貼地（反向運動）開關：關掉就是動作檔原始的樣子，可以對照
+func _toggle_ik() -> void:
+	var f: BodyFix = enemy.fix if subject != hero else hero_fix
+	f.foot_ik = not f.foot_ik
+	foot_dbg = true
+
+func _toggle_tune() -> void:
+	tune.toggle()
+
+func _back_to_game() -> void:
+	get_tree().change_scene_to_file("res://main.tscn")
 
 # 手動切換畫質（高 → 中 → 低 → 高），切過之後就不再自動調整
 func _cycle_quality() -> void:
@@ -197,11 +296,17 @@ func _watch_fps(dt: float) -> void:
 		street.set_quality(street.quality - 1)
 		warmup = 1.0
 
+# 切換天氣（要在街景裡才看得到；在攝影棚按的話會先切到白天的街景）
+func _weather(w: String) -> void:
+	if street == null or not street.visible: _scene("day")
+	street.set_weather(w)
+
 func _toggle_far() -> void:
 	if street == null or not street.visible: _scene("day")
 	far_view = not far_view
 
 func _combo(mode: String) -> void:
+	_subject(false)
 	combo_mode = mode
 	combo_i = 0
 	combo_t = 0.0
@@ -224,8 +329,8 @@ func _combo_next() -> void:
 		anim.seek(t0, true)
 		combo_t = 0.3
 	else:
-		# 新播法：從蓄力開始播，打中後收到一半才接下一招
-		anim.play(k, 0.12, combo_speed)
+		# 新播法：從蓄力開始播，打中後收到一半才接下一招；動作完整但加快（速度在 _process 依階段設定）
+		anim.play(k, 0.07)
 		anim.seek(HeroRig.MOVES[k][4] / 30.0, true)
 
 func _update_combo(dt: float) -> void:
@@ -257,6 +362,7 @@ func _update_combo(dt: float) -> void:
 		else: _combo_next()
 
 func _play(k: String) -> void:
+	_subject(false)
 	combo_mode = ""
 	cur = k
 	paused = false
@@ -264,7 +370,7 @@ func _play(k: String) -> void:
 
 func _on_finished(_n: StringName) -> void:
 	# 招式播完：回到待機一下，再重播同一招，方便反覆看
-	if cur == "idle" or combo_mode != "": return
+	if cur == "idle" or combo_mode != "" or subject != hero: return
 	anim.play("idle", 0.25)
 	if loop_move:
 		await get_tree().create_timer(0.7 / maxf(0.1, speed)).timeout
@@ -292,8 +398,22 @@ func _process(_dt: float) -> void:
 	_update_combo(_dt)
 	hit_flash = maxf(0.0, hit_flash - _dt)
 	anim.speed_scale = 0.0 if paused else speed
+	if combo_mode == "new" and not paused and HeroRig.MOVES.has(anim.current_animation) and anim.current_animation != "idle":
+		# 新播法：蓄力段和收招段各有自己的速度（跟遊戲一致）
+		anim.speed_scale = speed * (HeroRig.WIND_SPEED if anim.current_animation_position < HeroRig.MOVES[anim.current_animation][1] / 30.0 else HeroRig.RECOVER_SPEED)
 	# 鏡頭繞著主角：永遠對準身體中段，整個人都在畫面裡
-	var target := hero.position + Vector3(0, 0.95, 0)
+	# 敵人走路：照動作本身的速度往前走，走 5 公尺後回到起點
+	if subject != hero and enemy_walk and not paused:
+		var en: Node3D = enemy.node
+		en.position.z += (enemy.move_speed as float) * speed * _dt
+		if en.position.z > 2.5: en.position.z = -2.5
+	var target := subject.position + Vector3(0, 0.95, 0)
+	# 敵人倒下時身體會往後退一大段：鏡頭改成跟著髖部走，高度壓低一點
+	if subject != hero and enemy_cur == "fall":
+		var esk: Skeleton3D = enemy.skel
+		var hw: Vector3 = esk.global_transform * esk.get_bone_pose_position(esk.find_bone("Hips"))
+		fall_cam = fall_cam.lerp(Vector3(hw.x * 0.6, 0.7, hw.z * 0.6), minf(1.0, _dt * 6.0))
+		target = fall_cam
 	var dir := Vector3(sin(cam_yaw) * cos(cam_pitch), sin(cam_pitch), cos(cam_yaw) * cos(cam_pitch))
 	if sky_shot:
 		# 測試用：站在場地南邊往北仰望，檢查天空球和遠景
@@ -313,7 +433,14 @@ func _process(_dt: float) -> void:
 		cam.v_offset = test_voff   # 構圖往上移，腳不會被下方按鈕擋住
 	var an := anim.current_animation
 	if an != "":
-		info.text = "%s　第 %d 格%s" % [HeroRig.MOVES[an][3] if HeroRig.MOVES.has(an) else an, int(anim.current_animation_position * 30.0), "　慢動作" if speed < 0.5 else ""]
+		var label: String = HeroRig.MOVES[an][3] if HeroRig.MOVES.has(an) else an
+		if subject != hero: label = "敵人・" + (EnemyRig.ANIMS[an][1] if EnemyRig.ANIMS.has(an) else an)
+		info.text = "%s　第 %d 格%s" % [label, int(anim.current_animation_position * 30.0), "　慢動作" if speed < 0.5 else ""]
+		# 腳的量測：兩隻腳的鞋底離地多高（負的就是穿進地面），以及腳貼地有沒有開
+		if subject != hero or foot_dbg:
+			var f: BodyFix = enemy.fix if subject != hero else hero_fix
+			var txt := "\n腳貼地：%s　左腳離地 %.1f 公分　右腳 %.1f 公分" % ["開" if f.foot_ik else "關（原始動作）", foot_low[0], foot_low[1]]
+			info.text += txt
 		if street != null and street.visible: info.text += "\n每秒 %d 格　畫質：%s%s" % [roundi(fps_now), Street.QUALITY_NAMES[street.quality], "（自動）" if auto_quality else ""]
 		if combo_mode != "": info.text = ("舊播法　" if combo_mode == "old" else "新播法　") + info.text + ("　● 命中" if hit_flash > 0.0 else "")
 
@@ -328,6 +455,9 @@ func _test_args() -> void:
 	# --combo=new --shots=12：連段模式下每 0.1 秒拍一張，共 12 張
 	for a in args:
 		if a.begins_with("--combo="): _combo(a.split("=")[1])
+		elif a.begins_with("--kind="): _build_enemy(a.split("=")[1])
+		elif a.begins_with("--enemy="): _enemy_anim(a.split("=")[1])
+		elif a == "--noik": _toggle_ik()
 	# --dist=3：鏡頭拉近（檢查材質細節用）；--nonormal、--bias=數值：測試用的開關
 	for a in args:
 		if a.begins_with("--dist="):
@@ -341,6 +471,10 @@ func _test_args() -> void:
 		elif a.begins_with("--heropos="):
 			var pp := a.split("=")[1].split(",")
 			hero.position = Vector3(float(pp[0]), 0, float(pp[1]))
+	for a in args:
+		if a.begins_with("--weather="):
+			_scene("day")
+			street.set_weather(a.split("=")[1], true)
 	# --light：三個時段各拍近景（兩個角度）與遠景
 	if args.has("--light"):
 		var n := 0

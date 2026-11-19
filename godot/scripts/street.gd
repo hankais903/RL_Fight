@@ -15,13 +15,13 @@ const ARENA := 7.0
 const TOD := {
 	"day": {
 		"name": "白天",
-		"key_from": Vector3(-7, 11, 5), "key_color": Color(1.0, 0.95, 0.84), "key_energy": 1.55,
-		"rim_from": Vector3(3, 6, -10), "rim_color": Color(1.0, 0.98, 0.92), "rim_energy": 0.7,
+		"key_from": Vector3(-8.5, 8.2, 5.5), "key_color": Color(1.0, 0.93, 0.82), "key_energy": 1.1,
+		"rim_from": Vector3(3, 6, -10), "rim_color": Color(1.0, 0.98, 0.92), "rim_energy": 0.6,
 		"fill_from": Vector3(4, 5, 10), "fill_color": Color(0.55, 0.7, 1.0), "fill_energy": 0.28,
-		"bounce_color": Color(0.95, 0.82, 0.62), "bounce_energy": 0.22,
-		"sky_top": Color(0.22, 0.42, 0.80), "sky_horizon": Color(0.66, 0.78, 0.92), "ambient": Color(0.52, 0.64, 0.92), "ambient_energy": 0.62,
-		"fog": Color(0.68, 0.78, 0.92), "fog_density": 0.0016, "exposure": 0.98, "contrast": 1.08, "saturation": 1.1,
-		"window": 0.0, "neon": 0.5, "neon_light": 0.0, "flood": 0.0, "glow": 0.2, "vignette": 0.18, "contact": 0.55,
+		"bounce_color": Color(0.9, 0.8, 0.66), "bounce_energy": 0.16,
+		"sky_top": Color(0.24, 0.4, 0.68), "sky_horizon": Color(0.62, 0.7, 0.8), "ambient": Color(0.52, 0.58, 0.72), "ambient_energy": 0.7,
+		"fog": Color(0.62, 0.69, 0.78), "fog_density": 0.003, "exposure": 0.9, "contrast": 1.08, "saturation": 0.98,
+		"window": 0.0, "neon": 0.5, "neon_light": 0.0, "flood": 0.0, "glow": 0.2, "vignette": 0.18, "contact": 0.36,
 	},
 	"dusk": {
 		"name": "黃昏",
@@ -31,7 +31,7 @@ const TOD := {
 		"bounce_color": Color(1.0, 0.58, 0.36), "bounce_energy": 0.3,
 		"sky_top": Color(0.16, 0.2, 0.48), "sky_horizon": Color(1.0, 0.56, 0.3), "ambient": Color(0.56, 0.5, 0.8), "ambient_energy": 1.05,
 		"fog": Color(0.9, 0.52, 0.36), "fog_density": 0.0032, "exposure": 1.1, "contrast": 1.05, "saturation": 1.15,
-		"window": 1.0, "neon": 1.6, "neon_light": 0.6, "flood": 0.3, "glow": 0.45, "vignette": 0.3, "contact": 0.5,
+		"window": 1.0, "neon": 1.6, "neon_light": 0.6, "flood": 0.3, "glow": 0.45, "vignette": 0.3, "contact": 0.34,
 	},
 	"night": {
 		"name": "夜晚",
@@ -41,7 +41,7 @@ const TOD := {
 		"bounce_color": Color(0.4, 0.45, 0.7), "bounce_energy": 0.18,
 		"sky_top": Color(0.02, 0.03, 0.09), "sky_horizon": Color(0.08, 0.11, 0.24), "ambient": Color(0.32, 0.4, 0.72), "ambient_energy": 0.95,
 		"fog": Color(0.05, 0.07, 0.15), "fog_density": 0.0035, "exposure": 1.25, "contrast": 1.04, "saturation": 1.12,
-		"window": 2.4, "neon": 3.0, "neon_light": 1.0, "flood": 1.0, "glow": 0.75, "vignette": 0.38, "contact": 0.45,
+		"window": 2.4, "neon": 3.0, "neon_light": 1.0, "flood": 1.0, "glow": 0.75, "vignette": 0.38, "contact": 0.32,
 	},
 }
 # 天空球與遠景的各時段設定：雲的顏色與多寡、星星、遠方城市剪影的顏色與窗燈、遠景大樓的色調
@@ -71,6 +71,28 @@ var facade_mats: Array = []     # 有窗戶燈光的牆面材質
 var neon_labels: Array = []     # [Label3D, 顏色]
 var neon_lights: Array = []     # [OmniLight3D, 基準亮度]
 var tod := "day"
+# ---- 天氣 ----
+const WEATHERS := {   # [名稱, 雨量, 地面濕度, 雪量, 積雪]
+	"clear": ["晴天", 0.0, 0.0, 0.0, 0.0], "rain": ["下雨", 1.0, 1.0, 0.0, 0.0], "after": ["雨後", 0.0, 1.0, 0.0, 0.0],
+	"snow": ["下雪", 0.0, 0.0, 1.0, 1.0], "snowed": ["積雪", 0.0, 0.0, 0.0, 1.0],
+}
+const WEATHER_ORDER := ["clear", "rain", "after", "snow", "snowed"]
+var weather := "clear"
+const RAIN_DENSITY := 0.35     # 雨的密度（1 是大雨）。使用者要小雨
+var rain_now := 0.0            # 目前的雨量（0～1，平滑過渡）
+var snow_now := 0.0            # 目前的雪量（0～1）
+var cover_now := 0.0           # 目前的積雪程度（0～1）
+var snow_mat: ShaderMaterial
+var cover_mat: ShaderMaterial
+var snow_mm: MultiMesh
+var wet_now := 0.0             # 目前地面的濕度（0～1）
+var last_params := {}          # 最近一次套用的時段參數（天氣改變時要重新套用）
+var wet_mats: Array = []       # 會變濕的地面材質：[材質, 乾的顏色]
+var puddle_mats: Array = []    # 積水的材質（濕的時候更明顯）
+var rain_mat: ShaderMaterial
+var splash_mat: ShaderMaterial
+var rain_mm: MultiMesh
+var rain_audio: AudioStreamPlayer
 var backdrop_mats: Array = []     # 遠景大樓的材質（隨時段換色）
 var quality := 2                   # 畫質：2 高、1 中、0 低
 const QUALITY_NAMES := ["低", "中", "高"]
@@ -85,7 +107,9 @@ func _init() -> void:
 
 # ---------------- 材質 ----------------
 func _tex(n: String) -> Texture2D:
-	return load("res://assets/textures/%s.jpg" % n)
+	var path := "res://assets/textures/%s.jpg" % n
+	if not ResourceLoader.exists(path): path = "res://assets/textures/%s.png" % n
+	return load(path)
 
 # PBR 材質：顏色、法線、粗糙度三張貼圖；tri = 依世界座標三向投影（方塊不用自己攤貼圖）
 func pbr(set_name: String, uv: float, tri := false, tint := Color.WHITE, key_extra := "") -> StandardMaterial3D:
@@ -128,7 +152,8 @@ func contact_mat(fx: float, fz: float) -> StandardMaterial3D:
 	return m
 
 # 讓角色吃到輪廓光與補光，並在腳下加接地暗影
-func add_character(node: Node3D, radius := 0.55) -> void:
+# main = 主角（走進建築影子時「角色版主光」的亮度看它）；敵人傳 false
+func add_character(node: Node3D, radius := 0.55, main := true) -> void:
 	for mi in node.find_children("*", "MeshInstance3D", true, false):
 		var m3 := mi as MeshInstance3D
 		m3.layers = CHAR_LAYER      # 只在角色圖層：吃角色版主光、輪廓光、補光，不吃場景的主光
@@ -149,6 +174,7 @@ func add_character(node: Node3D, radius := 0.55) -> void:
 	blob.name = "ContactShadow"
 	add_child(blob)
 	blob.set_meta("follow", node)
+	blob.set_meta("main", main)
 	set_process(true)
 
 func _process(dt: float) -> void:
@@ -156,12 +182,202 @@ func _process(dt: float) -> void:
 	for c in get_children():
 		if c.has_meta("follow"):
 			var n: Node3D = c.get_meta("follow")
-			if not is_instance_valid(n): continue
+			if not is_instance_valid(n) or n.is_queued_for_deletion() or n.has_meta("down"):
+				c.queue_free()     # 角色不在了，腳下的暗影一起清掉
+				continue
 			(c as Node3D).global_position = Vector3(n.global_position.x, 0.02, n.global_position.z)
-			target = lit_amount(n.global_position)
+			(c as Node3D).visible = n.global_position.y < 0.3   # 被打飛到空中時不畫
+			if c.get_meta("main", true): target = lit_amount(n.global_position)
 	# 進出建築影子時平滑過渡
 	char_lit = lerpf(char_lit, target, minf(1.0, dt * 7.0))
 	char_key.light_energy = key_base * char_lit
+	_update_weather(dt)
+
+# ---------------- 天氣 ----------------
+# 切換天氣：clear 晴天、rain 下雨（地面跟著變濕）、after 雨後（雨停了但地還是濕的）。instant 是立刻到位（測試截圖用）
+func set_weather(name: String, instant := false) -> void:
+	if not WEATHERS.has(name): return
+	weather = name
+	if instant:
+		rain_now = WEATHERS[name][1]
+		wet_now = WEATHERS[name][2]
+		snow_now = WEATHERS[name][3]
+		cover_now = WEATHERS[name][4]
+		_apply_weather()
+
+func weather_name() -> String:
+	return WEATHERS[weather][0]
+
+func _update_weather(dt: float) -> void:
+	var r_to: float = WEATHERS[weather][1]
+	var w_to: float = WEATHERS[weather][2]
+	var s_to: float = WEATHERS[weather][3]
+	var c_to: float = WEATHERS[weather][4]
+	if is_equal_approx(rain_now, r_to) and is_equal_approx(wet_now, w_to) and is_equal_approx(snow_now, s_to) and is_equal_approx(cover_now, c_to): return
+	snow_now = move_toward(snow_now, s_to, dt / 2.5)
+	# 雪要下起來才開始積，大約 8 秒積滿；融掉比較快
+	cover_now = move_toward(cover_now, c_to, dt / (8.0 if c_to > cover_now else 4.0))
+	rain_now = move_toward(rain_now, r_to, dt / 2.5)     # 雨大約 2.5 秒下起來或停掉
+	wet_now = move_toward(wet_now, w_to, dt / 4.0)       # 地面大約 4 秒濕透或乾掉
+	_apply_weather()
+
+func _apply_weather() -> void:
+	_build_rain()
+	# 小雨：只用到三成多的雨絲、一半的落點
+	rain_mat.set_shader_parameter("amount", rain_now * RAIN_DENSITY)
+	splash_mat.set_shader_parameter("amount", rain_now * 0.5)
+	(get_meta("rain_node") as Node3D).visible = rain_now > 0.005
+	(get_meta("splash_node") as Node3D).visible = rain_now > 0.005
+	rain_audio.volume_db = lerpf(-40.0, -13.0, rain_now)
+	if rain_now > 0.01 and not rain_audio.playing: rain_audio.play(0.85 if rain_audio.stream is AudioStreamOggVorbis else 0.0)   # 跳過循環檔開頭疊著結尾的那一段
+	elif rain_now <= 0.01 and rain_audio.playing: rain_audio.stop()
+	_apply_snow()
+	# 地面變濕：顏色變深、變光滑（會反射天空和燈光）
+	for m in wet_mats:
+		var mt: StandardMaterial3D = m[0]
+		mt.albedo_color = (m[1] as Color) * lerpf(1.0, 0.62, wet_now)
+		mt.albedo_color.a = 1.0
+		mt.roughness = lerpf(1.0, 0.4, wet_now)
+		mt.metallic_specular = lerpf(0.4, 0.68, wet_now)
+	for m in puddle_mats: (m as StandardMaterial3D).albedo_color.a = lerpf(0.3, 0.85, wet_now)
+	# 陰天的光線要跟著重新套用
+	if not last_params.is_empty(): _apply(last_params)
+
+# 雪花與積雪：第一次要用時才建立
+func _apply_snow() -> void:
+	if snow_mat == null:
+		if snow_now <= 0.0 and cover_now <= 0.0: return
+		var rng := RandomNumberGenerator.new()
+		rng.seed = 321
+		snow_mat = ShaderMaterial.new()
+		snow_mat.shader = load("res://shaders/snow.gdshader")
+		snow_mm = MultiMesh.new()
+		snow_mm.transform_format = MultiMesh.TRANSFORM_3D
+		snow_mm.use_custom_data = true
+		var qm := QuadMesh.new()
+		qm.size = Vector2(1, 1)
+		snow_mm.mesh = qm
+		snow_mm.instance_count = 1800
+		for i in snow_mm.instance_count:
+			snow_mm.set_instance_transform(i, Transform3D.IDENTITY)
+			snow_mm.set_instance_custom_data(i, Color(rng.randf(), rng.randf(), rng.randf(), rng.randf()))
+		var n := MultiMeshInstance3D.new()
+		n.multimesh = snow_mm
+		n.material_override = snow_mat
+		n.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		n.custom_aabb = AABB(Vector3(-40, -1, -40), Vector3(80, 30, 80))
+		add_child(n)
+		set_meta("snow_node", n)
+		# 積雪：同一層材質疊在場景所有實體物件上（會投影的物件，加上特別標記要積雪的），只有朝上的面會白
+		cover_mat = ShaderMaterial.new()
+		cover_mat.shader = load("res://shaders/snow_cover.gdshader")
+		for c in get_children():
+			if c is MeshInstance3D and ((c as MeshInstance3D).cast_shadow != GeometryInstance3D.SHADOW_CASTING_SETTING_OFF or c.has_meta("snow")):
+				(c as MeshInstance3D).material_overlay = cover_mat
+		set_quality(quality)
+	snow_mat.set_shader_parameter("amount", snow_now)
+	(get_meta("snow_node") as Node3D).visible = snow_now > 0.005
+	cover_mat.set_shader_parameter("cover", cover_now)
+
+# 登記一個會變濕的地面材質
+func wettable(mt: StandardMaterial3D) -> StandardMaterial3D:
+	wet_mats.append([mt, mt.albedo_color])
+	return mt
+
+# 雨絲、水圈、雨聲：第一次要用時才建立
+func _build_rain() -> void:
+	if rain_mat != null: return
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 99
+	rain_mat = ShaderMaterial.new()
+	rain_mat.shader = load("res://shaders/rain.gdshader")
+	splash_mat = ShaderMaterial.new()
+	splash_mat.shader = load("res://shaders/splash.gdshader")
+	var defs := [[2400, QuadMesh.new(), rain_mat, "rain_node"], [320, PlaneMesh.new(), splash_mat, "splash_node"]]
+	for d in defs:
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.use_custom_data = true
+		var mesh: PrimitiveMesh = d[1]
+		mesh.set("size", Vector2(1, 1))
+		mm.mesh = mesh
+		mm.instance_count = d[0]
+		for i in mm.instance_count:
+			mm.set_instance_transform(i, Transform3D.IDENTITY)
+			mm.set_instance_custom_data(i, Color(rng.randf(), rng.randf(), rng.randf(), rng.randf()))
+		var n := MultiMeshInstance3D.new()
+		n.multimesh = mm
+		n.material_override = d[2]
+		n.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		n.custom_aabb = AABB(Vector3(-40, -1, -40), Vector3(80, 30, 80))   # 位置是在著色器裡算的，要手動給範圍才不會被誤判成看不到
+		n.visible = false
+		add_child(n)
+		set_meta(d[3], n)
+		if d[3] == "rain_node": rain_mm = mm
+	# 雨聲：一段可以無縫循環的沙沙聲
+	var rate := 22050
+	var count := rate * 2
+	var buf := PackedFloat32Array()
+	buf.resize(count)
+	var lp := 0.0
+	var lp2 := 0.0
+	for i in count:
+		var w := rng.randf_range(-1.0, 1.0)
+		lp += (w - lp) * 0.5
+		lp2 += (w - lp2) * 0.04
+		buf[i] = (lp - lp2) * 0.6
+	var data := PackedByteArray()
+	data.resize(count * 2)
+	var xf := rate / 4        # 尾端四分之一秒和開頭交疊，循環時聽不出接縫
+	for i in count:
+		var v := buf[i]
+		if i < xf:
+			var k := float(i) / xf
+			v = v * k + buf[count - xf + i] * (1.0 - k)
+		data.encode_s16(i * 2, int(clampf(v, -1.0, 1.0) * 30000.0))
+	var wav := AudioStreamWAV.new()
+	wav.format = AudioStreamWAV.FORMAT_16_BITS
+	wav.mix_rate = rate
+	wav.data = data
+	wav.loop_mode = AudioStreamWAV.LOOP_FORWARD
+	wav.loop_begin = 0
+	wav.loop_end = count - xf
+	rain_audio = AudioStreamPlayer.new()
+	rain_audio.stream = wav
+	# 有錄好的雨聲就用它（已經做成無縫循環），沒有才用上面合成的
+	if ResourceLoader.exists("res://assets/sfx/amb_rain.ogg"):
+		var ogg: AudioStreamOggVorbis = load("res://assets/sfx/amb_rain.ogg")
+		ogg.loop = true
+		rain_audio.stream = ogg
+	rain_audio.volume_db = -40.0
+	add_child(rain_audio)
+
+# 下雨時的天色：雲層變厚、陽光減弱、霧氣變重、顏色偏灰。回傳調整過的參數（不改原本的）
+func _weathered(t: Dictionary) -> Dictionary:
+	# 陰天的程度：下雨或下雪都會讓天色變灰；積雪會把光反射回來，環境比較亮
+	var k := maxf(rain_now, snow_now * 0.9)
+	if k <= 0.001 and cover_now <= 0.001: return t
+	var d := t.duplicate()
+	var gray := func(c: Color, mul: float) -> Color:
+		var l := c.get_luminance() * mul
+		return c.lerp(Color(l * 0.94, l, l * 1.08), 0.55 * k)
+	d.key_energy = t.key_energy * lerpf(1.0, 0.68, k)
+	d.rim_energy = t.rim_energy * lerpf(1.0, 0.7, k)
+	d.sky_top = gray.call(t.sky_top, 0.85)
+	d.sky_horizon = gray.call(t.sky_horizon, 0.8)
+	d.fog = gray.call(t.fog, 0.85)
+	d.fog_density = t.fog_density * lerpf(1.0, 1.7, k)
+	d.ambient = gray.call(t.ambient, 1.05)
+	d.ambient_energy = t.ambient_energy * lerpf(1.0, 1.08, k)
+	d.saturation = t.saturation * lerpf(1.0, 0.92, k)
+	d.exposure = t.exposure * lerpf(1.0, 0.94, k)
+	d.sun = t.sun * (1.0 - k * 0.8)
+	d.cloud_amount = lerpf(t.cloud_amount, 0.85, k)
+	d.cloud = gray.call(t.cloud, 0.6)
+	d.star = t.star * (1.0 - k)
+	d.bounce_energy = t.bounce_energy * lerpf(1.0, 1.4, cover_now)
+	d.bounce_color = (t.bounce_color as Color).lerp(Color(0.85, 0.9, 1.0), cover_now * 0.7)
+	return d
 
 # 這個位置的角色照到主光的比例：從腳、腰、頭各朝主光方向檢查有沒有被建築擋住
 func lit_amount(pos: Vector3) -> float:
@@ -243,6 +459,8 @@ func _build_env() -> void:
 	# 法線偏移要夠大：低角度的光貼著角色表面時，陰影貼圖的格子會在皺褶上切出銳利的暗紋
 	sun.shadow_normal_bias = 2.0
 	sun.shadow_blur = 2.2
+	# 影子的濃度：1 是全黑。使用者覺得影子顏色太深，調淡讓影子裡還看得到地面的顏色和紋理
+	sun.shadow_opacity = 0.62
 	# 主光只照場景；角色改由下面這盞「角色版主光」照，且角色不接收陰影貼圖。
 	# 原因：低角度的光貼著角色表面時，陰影貼圖的精度不足會在身上畫出黑色條紋（手機上特別明顯）。
 	# 角色走進建築影子時變暗，改用射線計算被擋住幾成（見 _process）。
@@ -279,7 +497,7 @@ func _build_env() -> void:
 		sp.shadow_enabled = true
 		sp.shadow_normal_bias = 2.0
 		sp.shadow_blur = 2.0
-		sp.shadow_opacity = 0.8
+		sp.shadow_opacity = 0.6
 		add_child(sp)
 		# 燈具：小燈箱加發光的燈面
 		var lm := StandardMaterial3D.new()
@@ -308,9 +526,51 @@ func _build_env() -> void:
 static func _aim(l: Light3D, from: Vector3) -> void:
 	l.basis = Basis.looking_at(-from.normalized(), Vector3.UP)
 
+# 日夜循環的關鍵時刻（一輪是 0～1）：白天最長，黃昏過渡到夜晚，夜晚之後經過一段像黃昏的清晨回到白天
+const CYCLE := [[0.0, "day"], [0.36, "day"], [0.48, "dusk"], [0.58, "night"], [0.88, "night"], [0.95, "dusk"], [1.0, "day"]]
+
+# 某個時段的全部參數（打光＋天空）
+func _params(name: String) -> Dictionary:
+	var d: Dictionary = (TOD[name] as Dictionary).duplicate()
+	d.merge(SKY_EXTRA[name])
+	return d
+
+# 直接切到某個時段
 func set_tod(name: String) -> void:
 	tod = name
-	var t: Dictionary = TOD[name]
+	_apply(_params(name))
+
+# 連續的日夜變化：x 是一輪裡的位置（0～1），在相鄰兩個關鍵時刻之間平滑內插
+func set_time(x: float) -> void:
+	x = fposmod(x, 1.0)
+	var i := 0
+	while i < CYCLE.size() - 2 and x >= CYCLE[i + 1][0]: i += 1
+	var a: Dictionary = _params(CYCLE[i][1])
+	var b: Dictionary = _params(CYCLE[i + 1][1])
+	var k := clampf((x - CYCLE[i][0]) / maxf(0.0001, CYCLE[i + 1][0] - CYCLE[i][0]), 0.0, 1.0)
+	k = k * k * (3.0 - 2.0 * k)
+	tod = CYCLE[i][1] if k < 0.5 else CYCLE[i + 1][1]
+	var d := {}
+	for key in a:
+		var va = a[key]
+		var vb = b[key]
+		if va is float or va is int: d[key] = lerpf(va, vb, k)
+		elif va is Color: d[key] = (va as Color).lerp(vb, k)
+		elif va is Vector3: d[key] = (va as Vector3).lerp(vb, k)
+		else: d[key] = va if k < 0.5 else vb
+	_apply(d)
+
+# 目前是哪個時段（顯示用）
+func phase_name() -> String:
+	return TOD[tod].name
+
+# 子類別的場景可以在這裡處理自己的東西（燈籠、燈泡之類）
+func _apply_extra(_t: Dictionary) -> void:
+	pass
+
+func _apply(t: Dictionary) -> void:
+	last_params = t
+	t = _weathered(t)
 	_aim(sun, t.key_from)
 	sun.light_color = t.key_color
 	sun.light_energy = t.key_energy
@@ -336,7 +596,7 @@ func set_tod(name: String) -> void:
 	env.adjustment_saturation = t.saturation
 	vignette_mat.set_shader_parameter("strength", t.vignette)
 	for m in ao_mats: (m as StandardMaterial3D).albedo_color.a = t.contact
-	var sx: Dictionary = SKY_EXTRA[name]
+	var sx := t
 	sky_mat.set_shader_parameter("top_color", t.sky_top)
 	sky_mat.set_shader_parameter("horizon_color", t.sky_horizon)
 	sky_mat.set_shader_parameter("ground_color", (t.fog as Color).darkened(0.35))
@@ -369,6 +629,8 @@ func set_tod(name: String) -> void:
 #   高：四倍反鋸齒、四段式 4096 陰影、泛光燈有影子、全解析度
 #   中：關反鋸齒、兩段式 2048 陰影、泛光燈不投影、解析度八成
 #   低：再關霓虹燈的光與光暈、陰影 1024、解析度六成
+	_apply_extra(t)
+
 func set_quality(q: int) -> void:
 	quality = clampi(q, 0, 2)
 	var vp := get_viewport()
@@ -378,6 +640,8 @@ func set_quality(q: int) -> void:
 	RenderingServer.directional_shadow_atlas_set_size([1024, 2048, 4096][quality], true)
 	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS if quality >= 2 else DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
 	env.glow_enabled = quality >= 1
+	if rain_mm != null: rain_mm.visible_instance_count = [900, 1500, -1][quality]
+	if snow_mm != null: snow_mm.visible_instance_count = [600, 1100, -1][quality]
 	set_tod(tod)
 
 # ---------------- 地面與人行道 ----------------
@@ -387,7 +651,7 @@ func _build_ground() -> void:
 	var pm := PlaneMesh.new()
 	pm.size = Vector2(700, 700)   # 鋪到很遠，配合霧和天空球的城市剪影，看不到地面的邊緣
 	outer.mesh = pm
-	outer.material_override = pbr("asphalt", 175.0, false, Color(0.52, 0.52, 0.54))
+	outer.material_override = pbr("asphalt", 175.0, false, Color(0.44, 0.44, 0.46))
 	outer.position.y = -0.02
 	add_child(outer)
 	# 打鬥區：不重複的大張路面（有裂縫、修補痕跡）
@@ -395,7 +659,7 @@ func _build_ground() -> void:
 	var gm := PlaneMesh.new()
 	gm.size = Vector2(37, 37)
 	ground.mesh = gm
-	ground.material_override = pbr("groundbig", 1.0, false, Color(0.74, 0.74, 0.76))
+	ground.material_override = pbr("groundbig", 1.0, false, Color(0.6, 0.6, 0.62))
 	add_child(ground)
 	# 人行道：建築前面一圈水泥，比路面高一階
 	var cm := pbr("concrete", 0.35, true, Color(0.78, 0.78, 0.8))

@@ -15,6 +15,29 @@ const MOVES := {
 	"side":  ["side_kick", 14, 0.5, "側踢", 3, 22],
 	"fly":   ["flying_kick", 9, 0.3, "飛踢", 0, 16],
 }
+# 連段的播放速度：動作完整保留（蓄力、命中、收招都播），但整體加快，節奏才不會拖。
+# 分兩段：蓄力段快一點（起手快、馬上打到），收招段略慢一點；命中瞬間的力道靠命中停頓表現，不靠放慢動作。
+# 這幾個值可以在遊戲和動作檢視器裡用「速度」面板即時調整（scripts/tune_panel.gd），所以是變數不是常數
+static var WIND_SPEED := 2.2        # 進場格 → 命中格
+static var RECOVER_SPEED := 1.8     # 命中格 → 可接招格
+static var HITSTOP_SCALE := 1.0     # 命中停頓時間的倍率
+static var IDLE_SPEED := 1.0        # 待機動作的播放倍率
+const SPEED_DEFAULTS := {"wind": 2.2, "recover": 1.8, "hitstop": 1.0, "idle": 1.0}
+
+# 這一招在連段裡實際花的時間：[蓄力秒數, 總秒數]
+static func move_time(move: String) -> Array:
+	var m: Array = MOVES[move]
+	var wind: float = (m[1] - m[4]) / 30.0 / WIND_SPEED
+	return [wind, wind + (m[5] - m[1]) / 30.0 / RECOVER_SPEED]
+
+# 試玩版的版本編號：每次發佈試玩連結前加一，顯示在畫面左上角，讓使用者確認看到的是不是最新版
+const BUILD := 41
+
+# 重新載入：網頁版是重新載入整個頁面（會抓到最新發佈的版本），其他平台是重新開始目前的場景
+static func reload_page(tree: SceneTree) -> void:
+	if OS.has_feature("web"): JavaScriptBridge.eval("window.location.reload()")
+	else: tree.reload_current_scene()
+
 const COMBO := ["jab", "cross", "hook", "upper", "round", "jab", "upper", "cross", "side", "fly"]
 
 static var hair_physics := true      # 測試用開關：頭髮物理

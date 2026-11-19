@@ -1,59 +1,52 @@
 extends Node3D
-# RL Fight（Godot 4 版）第一階段：街景、主角招式、敵人、自動戰鬥、波次
+# RL Fight（Godot 4 版）遊戲本體：自動戰鬥、敵人、波次。
+# 主角（HeroRig：骨架修正、材質、腳貼地、飄帶與頭髮物理）和街景打光（Street）都是和動作檢視器共用的。
 # 單位：公尺。舊版 1 單位 ≈ 0.0234 公尺。
 
 const U := 0.0234
 const ARENA := 7.0            # 擂台半徑
 const HERO_R := 0.42          # 主角碰撞半徑
-const HERO_SCALE := 1.8       # 模型原始高度約 1，放大成 1.8 公尺
+const KNOCKBACK := 0.0        # 一般攻擊的擊退力道：零。被打中的敵人位置完全不動，只有原地的受擊反應；把敵人打退是之後的技能
+const BODY_HALF := 0.35       # 主角半個身寬：軀幹要整個留在黃圈裡，所以身體中心最遠只能到「圓圈半徑 − 這個值」
+const SPAWN_GAP := 0.3       # 一波敵人分批進場，每隔這麼久出一個：敵人是一直湧進來的，不是一次全到
+const FX_SCALE := 1.7         # 特效整體放大的倍率（鏡頭拉遠之後，原本的尺寸在畫面上太小）
+const DAY_LEN := 180.0        # 日夜循環一輪的秒數（三分鐘）
+const JUMPS := [0.06, 0.48, 0.7]   # 按「時段」時依序跳到：白天、黃昏、夜晚
 
-# 招式：[動作檔名, 命中格(30fps), 位移保留比例, 是否腳]
-const MOVES := {
-	"idle":  ["fighting_idle", -1, 1.0, false],
-	"jab":   ["punching", 13, 1.0, false],
-	"cross": ["cross_punch", 24, 1.0, false],
-	"hook":  ["hook_punch", 27, 1.0, false],
-	"upper": ["uppercut", 12, 1.0, false],
-	"round": ["roundhouse_kick", 22, 0.5, true],
-	"side":  ["side_kick", 14, 0.5, true],
-	"fly":   ["flying_kick", 9, 0.3, true],
-}
-const COMBOS := [
-	["jab", "cross", "hook", "upper", "round"],
-	["hook", "jab", "upper", "cross", "side"],
-	["cross", "upper", "hook", "jab", "round"],
-	["jab", "hook", "upper", "cross", "side"],
-]
-# 敵人種類（數值沿用舊版，速度與體型換算成公尺）
+# 敵人種類（數值沿用舊版，速度與體型換算成公尺）。目前外觀是臨時替身
 const ENEMY_TYPES := {
 	"grunt":  {"name": "小嘍囉", "hp": 5.0,  "speed": 58.0,  "dmg": 2.0, "r": 15.0, "color": Color("d9534f"), "mass": 1.0},
-	"runner": {"name": "快腿仔", "hp": 4.0,  "speed": 112.0, "dmg": 2.0, "r": 13.0, "color": Color("f0883e"), "mass": 0.8},
+	"runner": {"name": "快腿仔", "hp": 4.0,  "speed": 140.0, "dmg": 2.0, "r": 13.0, "color": Color("f0883e"), "mass": 0.8},
 	"tank":   {"name": "肉盾",   "hp": 24.0, "speed": 36.0,  "dmg": 6.0, "r": 24.0, "color": Color("8e5bd1"), "mass": 3.0},
 }
 
+var street: Plaza
+var sfx: Sfx
 var hero: Node3D
-var hero_skel: Skeleton3D
 var anim: AnimationPlayer
+var fix: BodyFix
+var skel: Skeleton3D
+var hips_bone := 0
 var cam: Camera3D
-var sun: DirectionalLight3D
 var hud_top: Label
+var hud_info: Label
 var hud_hp: ProgressBar
 var hud_banner: Label
+var tune: TunePanel
 var fx_root: Node3D
+var gore: Gore
+var gore_btn: Button
 
 var enemies: Array = []
 var bodies: Array = []
 var hp := 100.0
 var max_hp := 100.0
 var base_dmg := 5.0
-var rate := 0.3
 var attack_range := 3.5
-var punch_t := 0.0
-var strike_n := 0
-var combo_route: Array = []
-var combo_step := 0
-var attack = null            # 目前這一擊：{target, t, hit_at, dur, hit, move, finisher}
-var post_impact := 0.0
+var combo_i := 0
+var atk = null               # 目前這一擊：{move, target, t, wind, total, hit, finisher}
+var idle_wait := 0.0
+var in_idle := true
 var hero_yaw := 0.0
 var face_yaw := 0.0
 var hitstop := 0.0
@@ -62,100 +55,57 @@ var shake_dir := Vector2.ZERO
 var wave := 0
 var kills := 0
 var wave_delay := 1.0
+var spawn_left := 0            # 這一波還沒進場的敵人數
+var spawn_t := 0.0
+var slowmo := 0.0             # 收尾後的短暫慢動作（剩餘秒數）
+var last_hit = null           # 剛被打中的敵人（命中停頓時讓它震動）
+var last_dir := Vector3.ZERO
+var dbg_far := 0.0            # 測試用：主角身體離擂台中心最遠到過哪裡
+var dbg_punches := 0          # 測試用：敵人出了幾拳
+var dbg_hurts := 0            # 測試用：主角被打中幾次
+var dbg_far_punch := 0.0      # 測試用：敵人出拳時離主角最遠的距離（應該不超過攻擊距離）
+var dbg_push := 0.0           # 測試用：敵人被打中後位置被推動的最大距離
 var banner_t := 0.0
 var time := 0.0
 var god := false
 var dead := false
-var mats := {}
+var dead_t := 0.0
+var day_t := 0.06              # 日夜循環目前的位置（0～1）
+var day_run := true            # 時間是否自動前進（測試指定時段時會停住）
 var close_cam := false
+var zoom_kick := 0.0             # 暴擊、收尾時鏡頭瞬間微微拉近的量（度），很快彈回
+# 畫質自動調整
+var auto_quality := true
+var fps_t := 0.0
+var fps_n := 0
+var fps_now := 60.0
+var warmup := 2.5
 
 func _ready() -> void:
-	_build_world()
-	_build_hero()
-	_build_hud()
-	_test_args()
-
-# ---------------- 街景 ----------------
-func _tex(n: String) -> Texture2D:
-	return load("res://assets/textures/%s.jpg" % n)
-
-func _pbr(set_name: String, uv: float, tri := false, tint := Color.WHITE) -> StandardMaterial3D:
-	var key := "%s|%s|%s" % [set_name, uv, tri]
-	if mats.has(key): return mats[key]
-	var m := StandardMaterial3D.new()
-	m.albedo_texture = _tex(set_name + "_color")
-	m.albedo_color = tint
-	m.normal_enabled = true
-	m.normal_texture = _tex(set_name + "_normal")
-	m.roughness_texture = _tex(set_name + "_rough")
-	m.uv1_scale = Vector3(uv, uv, uv)
-	m.uv1_triplanar = tri
-	mats[key] = m
-	return m
-
-func _box(pos: Vector3, size: Vector3, mat: Material) -> MeshInstance3D:
-	var mi := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = size
-	mi.mesh = bm
-	mi.material_override = mat
-	mi.position = pos
-	add_child(mi)
-	return mi
-
-func _build_world() -> void:
-	# 天空、環境光、色調
-	var env := Environment.new()
-	var sky := Sky.new()
-	var sm := ProceduralSkyMaterial.new()
-	sm.sky_top_color = Color(0.35, 0.5, 0.78)
-	sm.sky_horizon_color = Color(0.72, 0.78, 0.86)
-	sm.ground_horizon_color = Color(0.6, 0.62, 0.66)
-	sm.ground_bottom_color = Color(0.25, 0.24, 0.26)
-	sky.sky_material = sm
-	env.background_mode = Environment.BG_SKY
-	env.sky = sky
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy = 0.55
-	env.tonemap_mode = Environment.TONE_MAPPER_ACES
-	env.tonemap_exposure = 0.85
-	env.glow_enabled = true
-	env.glow_intensity = 0.5
-	env.fog_enabled = true
-	env.fog_light_color = Color(0.7, 0.75, 0.82)
-	env.fog_density = 0.0025
+	TunePanel.load_saved()
+	Gore.load_saved()
+	sfx = Sfx.new()
+	add_child(sfx)
+	# 街景與打光
+	street = Plaza.new()
+	add_child(street)
 	var we := WorldEnvironment.new()
-	we.environment = env
+	we.environment = street.env
 	add_child(we)
-	# 太陽（有影子）
-	sun = DirectionalLight3D.new()
-	sun.rotation_degrees = Vector3(-52, -38, 0)
-	sun.light_energy = 1.25
-	sun.light_color = Color(1.0, 0.96, 0.9)
-	sun.shadow_enabled = true
-	sun.directional_shadow_max_distance = 45.0
-	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
-	add_child(sun)
+	# 主角
+	var h := HeroRig.build()
+	hero = h.node
+	anim = h.anim
+	fix = h.fix
+	skel = h.skel
+	hips_bone = skel.find_bone("Hips")
+	add_child(hero)
+	street.add_character(hero)
+	anim.play("idle")
 	# 鏡頭：斜上方俯視
 	cam = Camera3D.new()
-	cam.fov = 38.0
+	cam.fov = 40.0
 	add_child(cam)
-	cam.position = Vector3(0, 15.5, 12.5)
-	cam.look_at(Vector3(0, 0, 0.6))
-	# 地面
-	var outer := MeshInstance3D.new()
-	var pm := PlaneMesh.new()
-	pm.size = Vector2(90, 90)
-	outer.mesh = pm
-	outer.material_override = _pbr("asphalt", 20.0, false, Color(0.55, 0.55, 0.55))
-	outer.position.y = -0.01
-	add_child(outer)
-	var ground := MeshInstance3D.new()
-	var gm := PlaneMesh.new()
-	gm.size = Vector2(37, 37)
-	ground.mesh = gm
-	ground.material_override = _pbr("groundbig", 1.0, false, Color(0.7, 0.7, 0.7))
-	add_child(ground)
 	# 攻擊範圍的黃色圈
 	var ring := MeshInstance3D.new()
 	var tm := TorusMesh.new()
@@ -169,60 +119,22 @@ func _build_world() -> void:
 	rm.albedo_color = Color(1.0, 0.85, 0.3)
 	ring.material_override = rm
 	ring.scale = Vector3(1, 0.05, 1)
-	ring.position.y = 0.01
+	ring.position.y = 0.012
 	ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(ring)
-	# 建築：北側一排、東西各一排
-	var blocks := [
-		[-470, -510, 300, 330, 180, "brick"], [-120, -530, 260, 420, 200, "plaster"], [210, -515, 280, 290, 180, "brick2"], [540, -500, 260, 380, 180, "brick"],
-		[-590, -150, 200, 300, 260, "brick2"], [-580, 230, 200, 360, 300, "plaster"],
-		[590, -170, 200, 340, 280, "plaster"], [580, 220, 200, 280, 260, "brick"],
-	]
-	for b in blocks:
-		var h: float = b[3] * U
-		_box(Vector3(b[0] * U, h * 0.5, b[1] * U), Vector3(b[2] * U, h, b[4] * U), _pbr(b[5], 0.3, true))
 	fx_root = Node3D.new()
 	add_child(fx_root)
-
-# ---------------- 主角 ----------------
-func _build_hero() -> void:
-	hero = load("res://assets/hero/hero.glb").instantiate()
-	hero.scale = Vector3.ONE * HERO_SCALE
-	add_child(hero)
-	hero_skel = hero.find_children("*", "Skeleton3D", true, false)[0]
-	var lib := AnimationLibrary.new()
-	for k in MOVES:
-		var sc: Node = load("res://assets/anims/%s.fbx" % MOVES[k][0]).instantiate()
-		var ap: AnimationPlayer = sc.find_children("*", "AnimationPlayer", true, false)[0]
-		var an: Animation = ap.get_animation(ap.get_animation_list()[0]).duplicate()
-		_trim_root_motion(an, MOVES[k][2])
-		an.loop_mode = Animation.LOOP_LINEAR if k == "idle" else Animation.LOOP_NONE
-		lib.add_animation(k, an)
-		sc.free()
-	anim = AnimationPlayer.new()
-	hero.add_child(anim)
-	anim.add_animation_library("", lib)
-	anim.play("idle")
-
-# 原地出招：髖部的水平位移只保留一部分，移動交給遊戲（衝刺）
-func _trim_root_motion(an: Animation, keep: float) -> void:
-	for t in an.get_track_count():
-		if an.track_get_type(t) != Animation.TYPE_POSITION_3D: continue
-		if not str(an.track_get_path(t)).ends_with(":Hips"): continue
-		var n := an.track_get_key_count(t)
-		if n == 0: continue
-		var p0: Vector3 = an.track_get_key_value(t, 0)
-		for i in n:
-			var p: Vector3 = an.track_get_key_value(t, i)
-			an.track_set_key_value(t, i, Vector3((p.x - p0.x) * keep, p.y, (p.z - p0.z) * keep))
+	gore = Gore.new()
+	add_child(gore)
+	_build_hud()
+	_test_args()
 
 # ---------------- 介面 ----------------
 func _build_hud() -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
-	var font: Font = load("res://assets/fonts/NotoSansTC.ttf")
 	var theme := Theme.new()
-	theme.default_font = font
+	theme.default_font = load("res://assets/fonts/NotoSansTC.ttf")
 	theme.default_font_size = 30
 	var root := Control.new()
 	root.theme = theme
@@ -250,6 +162,12 @@ func _build_hud() -> void:
 	hud_top.add_theme_color_override("font_outline_color", Color.BLACK)
 	hud_top.add_theme_constant_override("outline_size", 8)
 	root.add_child(hud_top)
+	hud_info = Label.new()
+	hud_info.position = Vector2(24, 62)
+	hud_info.add_theme_font_size_override("font_size", 22)
+	hud_info.add_theme_color_override("font_outline_color", Color.BLACK)
+	hud_info.add_theme_constant_override("outline_size", 6)
+	root.add_child(hud_info)
 	hud_banner = Label.new()
 	hud_banner.set_anchors_preset(Control.PRESET_CENTER_TOP)
 	hud_banner.position.y = 260
@@ -260,83 +178,176 @@ func _build_hud() -> void:
 	hud_banner.add_theme_color_override("font_outline_color", Color.BLACK)
 	hud_banner.add_theme_constant_override("outline_size", 14)
 	root.add_child(hud_banner)
+	# 下方按鈕：切換時段、畫質、開啟動作檢視器
+	var row := HBoxContainer.new()
+	row.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	row.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	row.offset_left = 12
+	row.offset_right = -12
+	row.offset_bottom = -12
+	root.add_child(row)
+	# 動作速度調整面板（按「速度」開關）
+	tune = TunePanel.new()
+	tune.offset_bottom = -94
+	root.add_child(tune)
+	for item in [["時段", _cycle_tod], ["天氣", _cycle_weather], ["畫質", _cycle_quality], ["速度", tune.toggle], ["血腥", _toggle_gore], ["檢視", _open_viewer], ["重整", HeroRig.reload_page.bind(get_tree())]]:
+		var b := Button.new()
+		b.text = item[0]
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.custom_minimum_size.y = 70
+		b.focus_mode = Control.FOCUS_NONE
+		b.pressed.connect(item[1])
+		row.add_child(b)
+		if item[0] == "血腥":
+			gore_btn = b
+			b.text = "血腥開" if Gore.enabled else "血腥關"
 
 func _banner(text: String, sec := 1.2) -> void:
 	hud_banner.text = text
 	banner_t = sec
 
-# ---------------- 敵人 ----------------
+func _cycle_tod() -> void:
+	# 跳到下一個時段，之後時間照常往前走
+	var x := fposmod(day_t, 1.0)
+	var nxt: float = JUMPS[0]
+	for j in JUMPS:
+		if j > x + 0.02:
+			nxt = j
+			break
+	day_t = nxt
+
+# 天氣輪流切換：晴天 → 下雨 → 雨後（地濕）→ 下雪 → 積雪 → 晴天
+func _cycle_weather() -> void:
+	var order: Array = Street.WEATHER_ORDER
+	street.set_weather(order[(order.find(street.weather) + 1) % order.size()])
+
+# 血腥表現的開關（噴血、地上的血跡），設定會記住
+func _toggle_gore() -> void:
+	Gore.set_enabled(not Gore.enabled)
+	gore_btn.text = "血腥開" if Gore.enabled else "血腥關"
+	if not Gore.enabled: gore.clear()
+
+func _cycle_quality() -> void:
+	auto_quality = false
+	street.set_quality((street.quality + 2) % 3)
+
+func _open_viewer() -> void:
+	get_tree().change_scene_to_file("res://viewer.tscn")
+
+# 量每秒畫面數；太低就自動降一級畫質
+func _watch_fps(dt: float) -> void:
+	if warmup > 0.0:
+		warmup -= dt
+		return
+	fps_t += dt
+	fps_n += 1
+	if fps_t < 1.5: return
+	fps_now = fps_n / fps_t
+	fps_t = 0.0
+	fps_n = 0
+	if auto_quality and fps_now < 40.0 and street.quality > 0:
+		street.set_quality(street.quality - 1)
+		warmup = 1.0
+
+# ---------------- 敵人（臨時替身） ----------------
+# 生一個敵人。外觀一律用敵人角色模型（EnemyRig），不同種類目前只有體型大小不同
 func spawn_enemy(type: String, pos := Vector3.INF) -> void:
 	var T: Dictionary = ENEMY_TYPES[type]
 	var r: float = T.r * U
-	var node := Node3D.new()
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = T.color
-	mat.roughness = 0.8
-	var body := MeshInstance3D.new()
-	var cm := CapsuleMesh.new()
-	cm.radius = r * 0.85
-	cm.height = r * 3.6
-	body.mesh = cm
-	body.position.y = r * 1.8
-	body.material_override = mat
-	node.add_child(body)
-	var head := MeshInstance3D.new()
-	var sm := SphereMesh.new()
-	sm.radius = r * 0.75
-	sm.height = r * 1.5
-	head.mesh = sm
-	head.position.y = r * 4.1
-	var hm := StandardMaterial3D.new()
-	hm.albedo_color = Color("e0ac85")
-	head.material_override = hm
-	node.add_child(head)
+	var mul: float = {"runner": 0.97, "tank": 1.25}.get(type, 1.0)     # 體型：小嘍囉 1、快腿仔幾乎一樣、肉盾比較大
+	var rig := EnemyRig.build(type, mul)                 # 小嘍囉用走的、快腿仔用跑的；肉盾還沒有自己的模型，先用小嘍囉
+	var node: Node3D = rig.node
 	add_child(node)
+	street.add_character(node, r * 1.5, false)        # 吃角色的光、腳下有接地暗影
 	if pos == Vector3.INF:
 		var a := randf() * TAU
 		var d := ARENA + 2.0 + randf() * 2.0
 		pos = Vector3(cos(a) * d, 0, sin(a) * d)
 	node.position = pos
+	var anim: AnimationPlayer = rig.anim
+	anim.play(rig.move)
+	anim.seek(randf() * anim.current_animation_length, true)   # 每一隻的腳步錯開，不要整群同手同腳
 	var hp_scale := pow(1.18, wave - 1) if wave > 1 else 1.0
-	enemies.append({"type": type, "T": T, "node": node, "mat": mat, "pos": pos, "vel": Vector3.ZERO, "r": r,
-		"hp": T.hp * hp_scale, "speed": T.speed * U, "dmg": T.dmg, "mass": T.mass, "flash": 0.0, "stun": 0.0, "atk": 0.6 + randf() * 0.6, "ph": randf() * 10.0, "dead": false})
+	enemies.append({"type": type, "T": T, "node": node, "anim": anim, "fix": rig.fix, "meshes": rig.meshes, "base": node.scale, "mul": mul, "move": rig.move, "move_speed": rig.move_speed, "pos": pos, "vel": Vector3.ZERO, "r": r,
+		"hp": T.hp * hp_scale, "speed": T.speed * U, "dmg": T.dmg, "mass": T.mass, "flash": 0.0, "stun": 0.0, "atk": 0.6 + randf() * 0.6, "dead": false, "squash": 0.0, "flashing": false, "hit_anim": false, "punch": -1.0, "punched": false})
 
 func _start_wave() -> void:
 	wave += 1
 	_banner("第 %d 波" % wave)
-	var n := 8 + wave * 4
-	for i in n:
-		var roll := randf()
-		spawn_enemy("tank" if roll < 0.1 and wave >= 2 else ("runner" if roll < 0.3 else "grunt"))
+	sfx.play("wave", -6.0, 1.0)
+	spawn_left = 18 + wave * 8
+	spawn_t = 0.0
 
 func _update_enemies(dt: float) -> void:
 	var hp3 := hero.position
 	for e in enemies:
+		if e.dead: continue        # 這一格剛被打倒的交給 _update_bodies 處理
 		var pos: Vector3 = e.pos
 		e.flash = maxf(0.0, e.flash - dt)
 		e.stun = maxf(0.0, e.stun - dt)
-		# 擊退速度衰減
 		pos += e.vel * dt
 		e.vel *= maxf(0.0, 1.0 - dt * 6.0)
 		var to := hp3 - pos
 		to.y = 0
 		var d := to.length()
 		var reach: float = e.r + HERO_R + 0.1
-		if e.stun <= 0.0 and e.vel.length() < 1.0:
-			if d > reach:
-				pos += to / d * e.speed * dt
-			else:
-				e.atk -= dt
-				if e.atk <= 0.0:
-					e.atk = 1.2
-					_hurt(e.dmg)
+		var ea: AnimationPlayer = e.anim
+		if e.stun > 0.0:
+			e.punch = -1.0             # 被打中：出到一半的拳被打斷
+		elif e.punch >= 0.0:
+			# 出拳中：站定不動，動作播到打中的那一格才扣主角的血
+			e.punch += dt
+			if not e.punched and e.punch >= (EnemyRig.PUNCH_IMPACT - EnemyRig.PUNCH_ENTER) / 30.0 / EnemyRig.PUNCH_SPEED:
+				e.punched = true
+				if d < reach + 0.5: _hurt(e.dmg)      # 主角已經離開的話就揮空
+			if e.punch >= (EnemyRig.PUNCH_END - EnemyRig.PUNCH_ENTER) / 30.0 / EnemyRig.PUNCH_SPEED:
+				e.punch = -1.0
+				e.atk = 0.5 + randf() * 0.3            # 收拳後停一下再出下一拳
+		elif d > reach:
+			# 敵人不停往主角走，不會停下來等（這是這個遊戲的玩法）
+			pos += to / d * e.speed * dt
+			e.atk = minf(e.atk, 0.2)                   # 走到面前後很快就出第一拳
+		else:
+			# 已經走到主角面前：站定，時間到就揮拳（只有直拳一種）
+			e.atk -= dt
+			if e.atk <= 0.0:
+				e.punch = 0.0
+				e.punched = false
+				dbg_punches += 1
+				dbg_far_punch = maxf(dbg_far_punch, d - reach)
+				ea.speed_scale = 1.0
+				ea.play("punch", 0.12, EnemyRig.PUNCH_SPEED)
+				ea.seek(EnemyRig.PUNCH_ENTER / 30.0, true)
+				sfx.play("whoosh", -14.0, 0.85)
 		e.pos = pos
 		var node: Node3D = e.node
-		node.position = pos + Vector3(0, absf(sin(time * 9.0 + e.ph)) * 0.04 if e.stun <= 0.0 else 0.0, 0)
-		if d > 0.01: node.rotation.y = atan2(to.x, to.z)
-		node.rotation.x = -0.35 if e.stun > 0.0 else 0.0
-		var mat: StandardMaterial3D = e.mat
-		mat.albedo_color = (e.T.color as Color).lerp(Color.WHITE, 0.6) if e.flash > 0.0 else e.T.color
+		node.position = pos
+		if d > 0.01: node.rotation.y = lerp_angle(node.rotation.y, atan2(to.x, to.z), minf(1.0, dt * 10.0))
+		# 被打的瞬間稍微壓扁再彈回來（很輕微，主要的反應是被打的動作）
+		e.squash = maxf(0.0, e.squash - dt * 3.2)
+		var sq: float = e.squash * 0.45
+		node.scale = (e.base as Vector3) * Vector3(1.0 + sq * 0.5, 1.0 - sq, 1.0 + sq * 0.5)
+		# 動作：被打時播受擊動作；其餘時間走路，播放速度跟實際移動速度同步，腳才不會滑
+		var anim: AnimationPlayer = e.anim
+		if e.stun > 0.0:
+			pass      # 受擊動作在 _damage() 裡開始播
+		else:
+			if e.hit_anim:
+				e.hit_anim = false
+				anim.play(e.move, 0.2)
+			if e.punch >= 0.0:
+				pass      # 出拳動作在上面開始播
+			elif d > reach:
+				if anim.current_animation != e.move: anim.play(e.move, 0.2)
+				anim.speed_scale = (e.speed as float) / ((e.move_speed as float) * (e.mul as float))
+			else:
+				# 站在主角面前等下一拳：停在出拳動作收回來的備戰姿勢（剛走到的話先把腳步停住）
+				if anim.current_animation == e.move: anim.speed_scale = 0.0
+		# 被打中的白色閃光：疊一層發亮的材質
+		var want: bool = e.flash > 0.0
+		if want != e.flashing:
+			e.flashing = want
+			for m in e.meshes: (m as MeshInstance3D).material_overlay = EnemyRig.flash_mat if want else null
 	# 敵人之間互相推開，不要疊在一起
 	for i in enemies.size():
 		for j in range(i + 1, enemies.size()):
@@ -354,68 +365,172 @@ func _update_enemies(dt: float) -> void:
 func _hurt(amount: float) -> void:
 	if god or dead: return
 	hp -= amount
-	shake = maxf(shake, 0.06)
+	dbg_hurts += 1
+	shake = maxf(shake, 0.1)
+	sfx.play("hurt", -4.0)
 	if hp <= 0.0:
 		hp = 0.0
 		dead = true
+		dead_t = 3.2
+		sfx.play("defeat", -4.0, 1.0)
 		_banner("倒下了…", 99.0)
 
-func _damage(e: Dictionary, amount: float, dir: Vector3, kb: float, crit: bool) -> void:
+# 打擊感分四級，一級比一級明顯：0 普通命中、1 打到重型敵人、2 暴擊、3 收尾。
+# [命中停頓秒數, 鏡頭晃動, 鏡頭拉近, 光條數量, 火花大小, 敵人壓扁程度]
+const HIT_FEEL := [
+	[0.06, 0.1, 0.4, 5, 0.5, 0.3],
+	[0.085, 0.16, 0.7, 6, 0.6, 0.18],
+	[0.12, 0.28, 1.8, 9, 0.85, 0.4],
+	[0.17, 0.45, 3.0, 14, 1.15, 0.5],
+]
+
+func _damage(e: Dictionary, amount: float, dir: Vector3, kb: float, level: int, main := true) -> void:
+	var f: Array = HIT_FEEL[level]
 	e.hp -= amount
-	e.flash = 0.08
-	e.stun = 0.35 if crit else 0.2
+	e.flash = 0.11
+	e.stun = 0.4 if level >= 2 else 0.24
+	e.squash = f[5]
+	# 受擊動作：從頭播，速度加快到跟僵直時間差不多長
+	var ea: AnimationPlayer = e.anim
+	ea.speed_scale = 1.0
+	ea.play("hit", 0.05, 2.4)
+	ea.seek(0.12, true)
+	e.hit_anim = true
 	e.vel += dir * kb / e.mass
-	_spark(e.pos + Vector3(0, e.r * 2.6, 0) - dir * e.r, crit)
-	var heavy: bool = e.mass >= 2.0
-	hitstop = maxf(hitstop, 0.07 if crit else (0.045 if heavy else 0.03))
-	shake = maxf(shake, 0.12 if crit else (0.05 if heavy else 0.0))
-	shake_dir = Vector2(dir.x, dir.z)
+	var at: Vector3 = e.pos + Vector3(0, e.r * 2.6, 0) - dir * e.r
+	_impact_fx(at, dir, level if main else 0)
+	# 噴血（血腥表現開著才有）：越重的一擊噴越多、越遠；打倒的那一下再多一些
+	gore.burst(at, dir, [5, 8, 13, 20][level] + (10 if e.hp <= 0.0 else 0), [0.8, 0.9, 1.1, 1.35][level])
+	_number(e.pos + Vector3(0, e.r * 5.0, 0), amount, level >= 2 and main)
+	if main:
+		hitstop = maxf(hitstop, f[0] * HeroRig.HITSTOP_SCALE)
+		shake = maxf(shake, f[1])
+		zoom_kick = maxf(zoom_kick, f[2])
+		shake_dir = Vector2(dir.x, dir.z)
+		last_hit = e
+		last_dir = dir
+		sfx.play(["hit", "heavy", "crit", "boom"][level], [-2.0, -1.0, 0.0, 1.0][level])
+		if level == 3: slowmo = 0.22
 	if e.hp <= 0.0 and not e.dead:
 		e.dead = true
 		kills += 1
-		# 被揍飛的身體
-		bodies.append({"node": e.node, "vel": dir * (12.0 + randf() * 6.0) / sqrt(e.mass) + Vector3(0, 6.0 + randf() * 3.0, 0), "life": 2.0, "spin": randf_range(-10.0, 10.0)})
+		sfx.play("fall", -10.0)
+		for m in e.meshes: (m as MeshInstance3D).material_overlay = null
+		# 倒下：原地播被打倒的動作（往後倒、躺平），不再整隻飛出去。腳貼地在躺下時要關掉
+		(e.node as Node3D).scale = e.base
+		(e.fix as BodyFix).foot_ik = false
+		(e.node as Node3D).set_meta("down", true)      # 倒下了：腳下的接地暗影拿掉
+		ea.speed_scale = 1.0
+		ea.play("fall", 0.08, EnemyRig.FALL_SPEED)
+		ea.seek(EnemyRig.FALL_ENTER / 30.0, true)
+		bodies.append({"base": e.base, "node": e.node, "life": 2.6})
 
 func _update_bodies(dt: float) -> void:
 	for b in bodies:
 		var n: Node3D = b.node
-		b.vel.y -= 22.0 * dt
-		n.position += b.vel * dt
-		n.rotation.x -= dt * 9.0 if n.position.y > 0.05 else 0.0
-		if n.position.y <= 0.0:
-			n.position.y = 0.0
-			b.vel = Vector3(b.vel.x * 0.5, 0.0, b.vel.z * 0.5)
-			n.rotation.x = -PI / 2
 		b.life -= dt
-		if b.life < 0.4: n.scale = Vector3.ONE * maxf(0.01, b.life / 0.4)
+		# 躺一會兒之後沉進地面消失
+		if b.life < 0.6: n.position.y = -(0.6 - b.life) / 0.6 * 0.5
 		if b.life <= 0.0: n.queue_free()
 	bodies = bodies.filter(func(b): return b.life > 0.0)
 
-# 命中火花：普通命中一小朵，暴擊比較大
-func _spark(pos: Vector3, crit: bool) -> void:
-	var mi := MeshInstance3D.new()
-	var sm := SphereMesh.new()
-	sm.radius = 0.5
-	sm.height = 1.0
-	mi.mesh = sm
+func _fx_mat(c: Color) -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
 	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
-	m.albedo_color = Color(1.0, 0.85, 0.35) if crit else Color(1.0, 0.95, 0.8)
-	mi.material_override = m
-	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	mi.position = pos
-	var s := 0.55 if crit else 0.3
-	mi.scale = Vector3.ONE * s * 0.4
-	fx_root.add_child(mi)
+	m.albedo_color = c
+	return m
+
+# 命中特效：閃光 ＋ 順著出拳方向噴出去的光條；暴擊和收尾再加一圈地面震波
+func _impact_fx(pos: Vector3, dir: Vector3, level: int) -> void:
+	var f: Array = HIT_FEEL[level]
+	var size: float = f[4] * FX_SCALE
+	var col := Color(1.0, 0.82, 0.3) if level >= 2 else Color(1.0, 0.95, 0.82)
+	# 閃光
+	var flash := MeshInstance3D.new()
+	var sm := SphereMesh.new()
+	sm.radius = 0.5
+	sm.height = 1.0
+	flash.mesh = sm
+	var fm := _fx_mat(col)
+	flash.material_override = fm
+	flash.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	flash.position = pos
+	flash.scale = Vector3.ONE * size * 0.45
+	fx_root.add_child(flash)
 	var tw := create_tween()
 	tw.set_parallel(true)
-	tw.tween_property(mi, "scale", Vector3.ONE * s, 0.12)
-	tw.tween_property(m, "albedo_color:a", 0.0, 0.12)
-	tw.chain().tween_callback(mi.queue_free)
+	tw.tween_property(flash, "scale", Vector3.ONE * size, 0.11).set_ease(Tween.EASE_OUT)
+	tw.tween_property(fm, "albedo_color:a", 0.0, 0.13)
+	tw.chain().tween_callback(flash.queue_free)
+	# 光條：細長的亮條朝出拳方向散開飛出去
+	for i in int(f[3]):
+		var d := (dir + Vector3(randf_range(-0.6, 0.6), randf_range(-0.15, 0.7), randf_range(-0.6, 0.6))).normalized()
+		var st := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = Vector3(0.07, 0.07, 1.0)
+		st.mesh = bm
+		var m2 := _fx_mat(col if i % 2 == 0 else Color.WHITE)
+		st.material_override = m2
+		st.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		fx_root.add_child(st)
+		st.look_at_from_position(pos + d * 0.15, pos + d * 2.0, Vector3.UP if absf(d.y) < 0.95 else Vector3.RIGHT)
+		var length: float = randf_range(0.35, 0.7) * (0.8 + size)
+		st.scale = Vector3(1, 1, length)
+		var t2 := create_tween()
+		t2.set_parallel(true)
+		t2.tween_property(st, "position", pos + d * randf_range(0.9, 1.7) * (0.7 + size), 0.16).set_ease(Tween.EASE_OUT)
+		t2.tween_property(st, "scale", Vector3(1, 1, 0.05), 0.16)
+		t2.tween_property(m2, "albedo_color:a", 0.0, 0.16)
+		t2.chain().tween_callback(st.queue_free)
+	# 地面震波：暴擊和收尾才有
+	if level >= 2:
+		var ring := MeshInstance3D.new()
+		var tm := TorusMesh.new()
+		tm.inner_radius = 0.86
+		tm.outer_radius = 1.0
+		tm.rings = 40
+		tm.ring_segments = 4
+		ring.mesh = tm
+		var rm := _fx_mat(col)
+		ring.material_override = rm
+		ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		ring.position = Vector3(pos.x, 0.03, pos.z)
+		ring.scale = Vector3(0.3, 0.05, 0.3)
+		fx_root.add_child(ring)
+		var r_end := 2.4 if level == 2 else 4.2
+		var t3 := create_tween()
+		t3.set_parallel(true)
+		t3.tween_property(ring, "scale", Vector3(r_end, 0.05, r_end), 0.28).set_ease(Tween.EASE_OUT)
+		t3.tween_property(rm, "albedo_color:a", 0.0, 0.28)
+		t3.chain().tween_callback(ring.queue_free)
+
+# 傷害數字：往上跳一下再淡出；暴擊是黃色大字
+var num_font: Font = null
+func _number(pos: Vector3, amount: float, big: bool) -> void:
+	if num_font == null: num_font = load("res://assets/fonts/NotoSansTC.ttf")
+	var lb := Label3D.new()
+	lb.text = str(roundi(amount)) + ("!" if big else "")
+	lb.font = num_font
+	lb.font_size = 96 if big else 64
+	lb.pixel_size = 0.0105
+	lb.outline_size = 14
+	lb.modulate = Color(1.0, 0.85, 0.25) if big else Color.WHITE
+	lb.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	lb.no_depth_test = true
+	lb.shaded = false
+	lb.position = pos + Vector3(randf_range(-0.2, 0.2), 0, 0)
+	fx_root.add_child(lb)
+	var tw := create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(lb, "position", lb.position + Vector3(0, 1.5, 0), 0.5).set_ease(Tween.EASE_OUT)
+	tw.tween_property(lb, "modulate:a", 0.0, 0.25).set_delay(0.3)
+	tw.tween_property(lb, "outline_modulate:a", 0.0, 0.25).set_delay(0.3)
+	tw.chain().tween_callback(lb.queue_free)
 
 # ---------------- 自動戰鬥 ----------------
+# 攻擊範圍內的敵人（黃色圈以擂台中心為圓心；貼身的敵人就算在圈外也要反擊），依離主角的距離排序
 func _zone_enemies() -> Array:
 	var out: Array = []
 	for e in enemies:
@@ -426,128 +541,179 @@ func _zone_enemies() -> Array:
 	out.sort_custom(func(a, b): return (a.pos as Vector3).distance_squared_to(hero.position) < (b.pos as Vector3).distance_squared_to(hero.position))
 	return out
 
-func _next_move(finisher: bool) -> String:
-	if finisher: return "fly"
-	if combo_route.is_empty() or combo_step >= combo_route.size():
-		combo_route = COMBOS.pick_random()
-		combo_step = 0
-	combo_step += 1
-	return combo_route[combo_step - 1]
-
-func _launch(target: Dictionary, finisher: bool) -> void:
-	var move := _next_move(finisher)
-	var dur := minf(0.45, rate * 1.4) if finisher else minf(0.32, rate * 0.9)
-	var hit_at := dur * (0.6 if finisher else 0.5)
-	attack = {"target": target, "t": 0.0, "hit_at": hit_at, "dur": dur, "hit": false, "move": move, "finisher": finisher}
-	# 讓動作的「命中格」剛好對上判定時間：從命中前一小段開始播
-	var ti: float = MOVES[move][1] / 30.0
-	var t0 := maxf(0.0, ti - maxf(0.12, hit_at) * 1.25)
-	anim.play(move, 0.1, maxf(1.0, (ti - t0) / maxf(0.05, hit_at)))
-	anim.seek(t0, true)
-	post_impact = -1.0
+# 出下一招。播法跟動作檢視器的「新播法」一樣：從蓄力（進場格）開始播，命中格對上判定，
+# 打中後收到一半（可接招格）才接下一招。衝刺安排在蓄力期間。
+# 動作完整保留但加快：蓄力段 HeroRig.WIND_SPEED 倍、收招段 HeroRig.RECOVER_SPEED 倍（在 _process 裡設定）。
+func _launch(zone: Array) -> void:
+	var move: String = HeroRig.COMBO[combo_i % HeroRig.COMBO.size()]
+	combo_i += 1
+	var finisher := move == "fly"
+	# 不管哪一招，一律打離主角最近的那一個
+	var target: Dictionary = zone[0]
+	var tm := HeroRig.move_time(move)
+	anim.play(move, 0.07)
+	anim.seek(HeroRig.MOVES[move][4] / 30.0, true)
+	# 揮拳和踢腿的風聲不同
+	sfx.play("whoosh_kick" if move in ["round", "side", "fly"] else "whoosh", -7.0)
+	atk = {"move": move, "target": target, "t": 0.0, "wind": tm[0], "total": tm[1], "hit": false, "finisher": finisher}
+	in_idle = false
 
 func _update_combat(dt: float) -> void:
-	punch_t -= dt
-	if attack == null and punch_t <= 0.0 and not dead:
+	if atk == null and not dead:
 		var zone := _zone_enemies()
 		if not zone.is_empty():
-			strike_n += 1
-			punch_t = rate
-			if strike_n % 6 == 0:
-				_launch(zone[zone.size() - 1], true)
-				punch_t = rate * 1.6
-			else:
-				_launch(zone[0], false)
-	if attack != null:
-		var tg: Dictionary = attack.target
+			_launch(zone)
+		elif not in_idle:
+			# 圈內沒有敵人了：等一小段，沒有下一招就回備戰姿勢
+			idle_wait += dt
+			if idle_wait > 0.12:
+				in_idle = true
+				anim.play("idle", 0.25)
+	if atk != null:
+		idle_wait = 0.0
+		var tg: Dictionary = atk.target
 		var tp: Vector3 = tg.pos
 		var to := tp - hero.position
 		to.y = 0
 		var d := maxf(0.001, to.length())
-		face_yaw = atan2(to.x, to.z)
-		if not attack.hit:
-			# 衝刺：在命中前移動到目標面前（不出圈）
+		var moving := false
+		if not atk.hit:
+			face_yaw = atan2(to.x, to.z)
+			# 衝刺：在蓄力期間移動到目標面前（不出圈）
 			var stand: float = tg.r + HERO_R + 0.15
 			var goal := tp - to / d * stand
 			var gl := Vector2(goal.x, goal.z).length()
-			if gl > attack_range: goal *= attack_range / gl
-			var left := maxf(dt, attack.hit_at - attack.t)
+			# 站位點不超過圈內的活動範圍（再往內留一點，出招往前踏時才不會頂到邊界）
+			var lim := attack_range - BODY_HALF - 0.15
+			if gl > lim: goal *= lim / gl
+			var left := maxf(dt, atk.wind - atk.t)
 			var mv := goal - hero.position
 			mv.y = 0
-			if mv.length() > 0.01: hero.position += mv * minf(1.0, dt / left)
-		attack.t += dt
-		if not attack.hit and attack.t >= attack.hit_at:
-			attack.hit = true
-			post_impact = 0.0
-			var crit := randf() < 0.12
+			if mv.length() > 0.01:
+				hero.position += mv * minf(1.0, dt / left)
+				moving = mv.length() / left > 0.6
+		# 主角本身在移動時不能固定腳，不然腳會被拖著走；站定出拳時再固定
+		fix.foot_lock = not moving
+		atk.t += dt
+		if not atk.hit and atk.t >= atk.wind:
+			atk.hit = true
+			var crit := randf() < 0.14
 			var dir := to / d
-			var dmg := base_dmg * (3.0 if attack.finisher else 1.0) * (2.0 if crit else 1.0)
-			if not tg.dead: _damage(tg, dmg, dir, 14.0 if attack.finisher else 6.0, crit or attack.finisher)
-			if attack.finisher:
-				# 收尾飛踢：震開周圍的敵人
-				for o in enemies:
-					if o.dead or o == tg: continue
-					var dv: Vector3 = o.pos - tp
-					dv.y = 0
-					if dv.length() < 2.0 + o.r: _damage(o, dmg, dv.normalized(), 12.0, false)
-				shake = maxf(shake, 0.2)
-			anim.speed_scale = 1.2
-		if attack.t >= attack.dur: attack = null
-	# 命中後一小段時間沒有下一拳，就回到備戰姿勢
-	if post_impact >= 0.0:
-		post_impact += dt
-		if attack == null and post_impact > 0.45:
-			post_impact = -1.0
-			anim.speed_scale = 1.0
-			anim.play("idle", 0.25)
+			var dmg := base_dmg * (3.0 if atk.finisher else 1.0) * (2.0 if crit else 1.0)
+			var level := 3 if atk.finisher else (2 if crit else (1 if tg.mass >= 2.0 else 0))
+			# 敵人要一個一個解決：一拳只打一個目標，旁邊的不受影響；被打的也不會被推走，只原地頓一下，
+			# 血打完才倒下飛出去。把敵人彈開、震開一圈這類效果留給之後的技能（KNOCKBACK 預設幾乎是零）
+			if not tg.dead: _damage(tg, dmg, dir, KNOCKBACK, level)
+		if atk.t >= atk.total: atk = null
+	else:
+		fix.foot_lock = true
+	_keep_in_ring()
 	# 平滑轉向
-	hero_yaw = lerp_angle(hero_yaw, face_yaw, minf(1.0, dt * 30.0))
+	hero_yaw = lerp_angle(hero_yaw, face_yaw, minf(1.0, dt * 18.0))
 	hero.rotation.y = hero_yaw
 
+# 主角不可以超出黃圈：看的是身體（髖部）實際的位置，不是站位點——出招時動作本身會往前踏，
+# 飛踢甚至離站位點 60 公分。只要身體超出範圍，就把整個人往圈內推回來。
+func _keep_in_ring() -> void:
+	var hips: Vector3 = skel.global_transform * skel.get_bone_pose_position(hips_bone)
+	var r := Vector2(hips.x, hips.z).length()
+	var lim := attack_range - BODY_HALF
+	if r > lim:
+		var push := Vector3(hips.x, 0, hips.z) / r * (r - lim)
+		hero.position -= push
+
 func _process(delta: float) -> void:
+	_watch_fps(delta)
+	# 日夜循環：三分鐘一輪，光線、天空、燈火連續變化
+	if day_run: day_t += delta / DAY_LEN
+	street.set_time(day_t)
+	# 音樂與環境音：倒下時音樂壓低；下雪時換成安靜的雪地聲、市集的人聲變小
+	sfx.loop_volume("bgm", -15.0 if not dead else -30.0)
+	sfx.loop_volume("market", lerpf(-21.0, -30.0, maxf(street.rain_now, street.snow_now)))
+	sfx.loop_volume("snow", lerpf(-60.0, -14.0, street.snow_now))
 	var dt := minf(delta, 1.0 / 30.0)
 	time += dt
-	# 命中停頓：整個畫面定格一下
+	# 收尾後的短暫慢動作
+	var slow := 1.0
+	if slowmo > 0.0 and hitstop <= 0.0:
+		slowmo -= delta
+		slow = 0.35
+		dt *= slow
+	# 命中停頓：動作定格一下
 	if hitstop > 0.0:
 		hitstop -= dt
-		anim.speed_scale = 0.0001 if anim.speed_scale > 0.001 else anim.speed_scale
+		anim.speed_scale = 0.02
+		# 定格時被打的敵人沿受力方向快速震動，像被打得發抖
+		if last_hit != null and is_instance_valid(last_hit.node):
+			(last_hit.node as Node3D).position = (last_hit.pos as Vector3) + last_dir * sin(time * 95.0) * 0.07
 		_update_camera(dt)
 		return
-	if attack != null and attack.hit and anim.speed_scale < 0.01: anim.speed_scale = 1.2
 	_update_combat(dt)
+	# 出招中依階段調整播放速度；待機是原速
+	anim.speed_scale = slow * (HeroRig.IDLE_SPEED if atk == null else (HeroRig.RECOVER_SPEED if atk.hit else HeroRig.WIND_SPEED))
 	_update_enemies(dt)
 	_update_bodies(dt)
 	enemies = enemies.filter(func(e): return not e.dead)
-	if enemies.is_empty() and not dead:
+	if dead:
+		dead_t -= dt
+		if dead_t <= 0.0: get_tree().reload_current_scene()
+	elif spawn_left > 0:
+		# 這一波的敵人分批進場
+		spawn_t -= dt
+		if spawn_t <= 0.0:
+			spawn_t = SPAWN_GAP
+			spawn_left -= 1
+			var roll := randf()
+			spawn_enemy("tank" if roll < 0.1 and wave >= 2 else ("runner" if roll < 0.3 else "grunt"))
+	elif enemies.is_empty():
 		wave_delay -= dt
 		if wave_delay <= 0.0:
 			wave_delay = 2.0
 			_start_wave()
+	# 測試用的量測
+	var hw: Vector3 = skel.global_transform * skel.get_bone_pose_position(hips_bone)
+	dbg_far = maxf(dbg_far, Vector2(hw.x, hw.z).length())
+	for e in enemies: dbg_push = maxf(dbg_push, (e.vel as Vector3).length())
 	_update_camera(dt)
 	hud_hp.max_value = max_hp
 	hud_hp.value = hp
 	hud_top.text = "第 1 章　第 %d 波　擊倒 %d" % [wave, kills]
+	hud_info.text = "版本 %d　%s・%s　每秒 %d 格　畫質：%s%s" % [HeroRig.BUILD, street.phase_name(), street.weather_name(), roundi(fps_now), Street.QUALITY_NAMES[street.quality], "（自動）" if auto_quality else ""]
 	if banner_t > 0.0:
 		banner_t -= dt
 		if banner_t <= 0.0: hud_banner.text = ""
 
 func _update_camera(dt: float) -> void:
 	# 鏡頭晃動：沿出拳方向來回，幅度小、衰減快
-	shake = maxf(0.0, minf(0.25, shake) - dt * 1.4)
-	var o := shake_dir * sin(time * 46.0) * shake
+	shake = maxf(0.0, minf(0.5, shake) - dt * 2.2)
+	zoom_kick = maxf(0.0, zoom_kick - dt * 9.0)
+	# 沿出拳方向來回晃，再加一點垂直方向，不用隨機抖動（隨機抖動容易讓人不舒服）
+	var o := shake_dir * sin(time * 52.0) * shake + Vector2(-shake_dir.y, shake_dir.x) * sin(time * 37.0 + 1.3) * shake * 0.25
 	if close_cam:
-		cam.position = hero.position + Vector3(1.6, 1.9, 3.2)
-		cam.look_at(hero.position + Vector3(0, 0.9, 0))
+		cam.fov = 34.0
+		cam.position = hero.position + Vector3(2.2, 1.7, 4.2)
+		cam.look_at(hero.position + Vector3(0, 0.95, 0))
 	else:
-		cam.position = Vector3(o.x, 15.5, 12.5 + o.y)
+		# 鏡頭固定不跟隨，拉遠到整個攻擊圈和圈外等待的敵人都看得到；只有命中時的晃動和微微拉近
+		cam.fov = 40.0 - zoom_kick
+		cam.position = Vector3(o.x, 23.5, 19.0 + o.y)
+		cam.look_at(Vector3(0, 0, 0.6))
 
 # ---------------- 測試用：命令列參數 ----------------
-# 例：godot --path . -- --spawn=60 --god --shots=2,5,8
+# 例：godot --path . res://main.tscn -- --spawn=40 --god --shots=3,6　（--close 主角近照、--tod=dusk 指定時段）
 func _test_args() -> void:
 	var shots: Array = []
-	for a in OS.get_cmdline_user_args():
+	var args := OS.get_cmdline_user_args()
+	if not args.is_empty(): auto_quality = false   # 測試截圖時固定用高畫質
+	for a in args:
 		if a == "--god": god = true
 		elif a == "--close": close_cam = true
+		elif a.begins_with("--weather="): street.set_weather(a.split("=")[1], true)
+		elif a.begins_with("--tod="):
+			# 指定時段並停住時間：day／dusk／night，或直接給 0～1 的數字
+			var v := a.split("=")[1]
+			day_t = {"day": 0.15, "dusk": 0.48, "night": 0.72}.get(v, float(v))
+			day_run = false
 		elif a.begins_with("--spawn="):
 			wave = 1
 			wave_delay = 99999.0
@@ -561,8 +727,7 @@ func _test_args() -> void:
 	for s in shots:
 		await get_tree().create_timer(s - (shots[i - 1] if i > 0 else 0.0)).timeout
 		await RenderingServer.frame_post_draw
-		var img := get_viewport().get_texture().get_image()
-		img.save_png("user://shot_%d.png" % i)
-		print("截圖 %d 秒：敵人 %d 擊倒 %d 血量 %d 繪製次數 %d 每秒畫面 %d" % [s, enemies.size(), kills, hp, RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME), Engine.get_frames_per_second()])
+		get_viewport().get_texture().get_image().save_png("user://shot_%d.png" % i)
+		print("截圖 %d 秒：敵人 %d 擊倒 %d 血量 %d｜主角身體離中心最遠 %.2f 公尺（上限 %.2f）｜敵人被推動的最大速度 %.2f｜敵人出拳 %d 次、打中主角 %d 次、出拳時超出攻擊距離最多 %.2f 公尺" % [s, enemies.size(), kills, hp, dbg_far, attack_range - BODY_HALF, dbg_push, dbg_punches, dbg_hurts, dbg_far_punch])
 		i += 1
 	get_tree().quit()
