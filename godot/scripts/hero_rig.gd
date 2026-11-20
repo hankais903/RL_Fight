@@ -31,7 +31,7 @@ static func move_time(move: String) -> Array:
 	return [wind, wind + (m[5] - m[1]) / 30.0 / RECOVER_SPEED]
 
 # 試玩版的版本編號：每次發佈試玩連結前加一，顯示在畫面左上角，讓使用者確認看到的是不是最新版
-const BUILD := 47
+const BUILD := 48
 
 # 重新載入：網頁版是重新載入整個頁面（會抓到最新發佈的版本），其他平台是重新開始目前的場景
 static func reload_page(tree: SceneTree) -> void:

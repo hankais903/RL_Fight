@@ -457,6 +457,7 @@ func _test_args() -> void:
 	# --combo=new --shots=12：連段模式下每 0.1 秒拍一張，共 12 張
 	for a in args:
 		if a.begins_with("--combo="): _combo(a.split("=")[1])
+		elif a == "--nopbr": EnemyRig.use_pbr = false
 		elif a.begins_with("--kind="): _build_enemy(a.split("=")[1])
 		elif a.begins_with("--enemy="): _enemy_anim(a.split("=")[1])
 		elif a == "--noik": _toggle_ik()

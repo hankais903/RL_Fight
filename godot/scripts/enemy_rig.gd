@@ -80,10 +80,11 @@ static func build(kind := "grunt", scale_mul := 1.0) -> Dictionary:
 		if not mats.has(kind):
 			# 材質修正跟主角同樣的理由：自動產生的金屬度／粗糙度貼圖不可靠，凹凸貼圖是雜訊
 			var shared_mat: StandardMaterial3D = mi.mesh.surface_get_material(0).duplicate()
-			shared_mat.metallic = 0.0
-			shared_mat.metallic_texture = null
-			shared_mat.roughness_texture = null
-			shared_mat.roughness = 0.78
+			if not use_pbr:
+				shared_mat.metallic = 0.0
+				shared_mat.metallic_texture = null
+				shared_mat.roughness_texture = null
+				shared_mat.roughness = 0.78
 			shared_mat.normal_enabled = false
 			shared_mat.disable_receive_shadows = true     # 理由同主角：陰影貼圖會在角色身上畫出條紋
 			mats[kind] = shared_mat
@@ -106,3 +107,4 @@ static func build(kind := "grunt", scale_mul := 1.0) -> Dictionary:
 
 static var foot_ik := true      # 測試用開關
 static var lod_bias := 1.0     # 遠距離簡化的傾向（越小越早換成面數少的版本）
+static var use_pbr := true     # 用模型自帶的金屬度／粗糙度貼圖（關掉就是全身同一種反光）
