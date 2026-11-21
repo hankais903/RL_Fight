@@ -6,6 +6,8 @@ extends Node3D
 const U := 0.0234
 const ARENA := 7.0            # 擂台半徑
 const HERO_R := 0.42          # 主角碰撞半徑
+const FALL_FLY := 1.9          # 敵人被打倒時往後飛出去的距離（公尺，約一個人的身高）。倒下動作本身另外還會後退約 1.5 公尺
+const FALL_FLY_TIME := 0.55   # 飛出去花的時間（秒）
 const KNOCKBACK := 0.0        # 一般攻擊的擊退力道：零。被打中的敵人位置完全不動，只有原地的受擊反應；把敵人打退是之後的技能
 const BODY_HALF := 0.35       # 主角半個身寬：軀幹要整個留在黃圈裡，所以身體中心最遠只能到「圓圈半徑 − 這個值」
 const SPAWN_GAP := 0.3       # 一波敵人分批進場，每隔這麼久出一個：敵人是一直湧進來的，不是一次全到
@@ -36,6 +38,16 @@ var tune: TunePanel
 var fx_root: Node3D
 var gore: Gore
 var gore_btn: Button
+# 發熱與耗電：手機螢幕常是每秒 120 格，照螢幕的速度全畫會讓手機一直滿載、發燙（使用者回報玩久了手機會燙）。
+# 所以畫面最多每秒畫 FPS_CAP 格；「省電」模式再降到 ECO_FPS 格並限制 3D 解析度。遊戲邏輯照常每格更新，只是少畫
+const FPS_CAP := 30.0           # 使用者指定：先一律鎖定每秒 30 格（第一版是 60，省電模式才 30）
+const ECO_FPS := 30.0
+const ECO_RES := 1440          # 省電模式下 3D 畫面高度的上限（像素）
+const POWER_PATH := "user://power.cfg"
+static var eco := false
+var eco_btn: Button
+var draw_acc := 0.0
+var drew := true
 
 var enemies: Array = []
 var bodies: Array = []
@@ -57,6 +69,31 @@ var kills := 0
 var wave_delay := 1.0
 var spawn_left := 0            # 這一波還沒進場的敵人數
 var spawn_t := 0.0
+# 終結鏡頭：每一波最後一個敵人的最後一拳，鏡頭拉到主角肩膀後面看這一拳打中，全程慢動作，打中時鏡頭震動
+var cine := 0                  # 0 沒有、1 拉近並蓄力、2 打中後的慢動作、3 拉回原本的鏡頭
+var cine_mix := 0.0            # 鏡頭在「原本的遠鏡頭」(0) 和「肩膀後面」(1) 之間的位置
+var cine_t := 0.0              # 這個階段已經過了幾秒（真實時間，不受慢動作影響）
+var cine_dir := Vector3.FORWARD   # 主角指向那個敵人的方向
+var cine_aim := Vector3.ZERO      # 鏡頭看著的點（敵人的胸口）
+var real_dt := 0.0             # 這一格的真實時間（不受慢動作影響）
+var real_time := 0.0
+var fx_mul := 1.0              # 命中特效的額外倍率（終結鏡頭是近看，特效要縮小才不會蓋住人）
+var cine_count := 0            # 測試用：觸發了幾次
+const CINE_WIND_SCALE := 0.2   # 蓄力時的時間倍率（第一版 0.32，使用者要再慢一點）
+const CINE_HIT_SCALE := 0.08   # 打中瞬間的時間倍率（第一版 0.16）
+const CINE_HIT_HOLD := 0.9     # 打中後最慢的那一段持續幾秒（真實時間）
+const CINE_FALL_SCALE := 0.4   # 之後敵人倒下這一段的時間倍率（全程用最慢的話倒下要十幾秒，太久）
+const CINE_AFTER := 0.3        # 敵人躺平後再停多久才切回原本的鏡頭（遊戲時間）
+# 兩種版本都保留：cine_zoom 開＝鏡頭拉到肩膀後面看到敵人倒下（第二版）；
+# 關＝鏡頭不動，只有最後一擊的慢動作（從出拳起共 CINE_FLAT_TIME 秒真實時間）加鏡頭震動（第三版，目前預設）
+static var cine_zoom := false
+const CINE_FLAT_TIME := 2.0    # 不拉近的版本：從打中的瞬間起慢動作幾秒（真實時間）
+const CINE_FLAT_HIT := 0.12    # 不拉近的版本：打中後的時間倍率
+var cine_total := 0.0          # 從觸發開始過了幾秒（真實時間）
+var cine_target = null         # 被終結的那個敵人
+var cine_skel: Skeleton3D = null
+var cine_side := 0.0           # 打中後鏡頭往旁邊移開的程度（0～1）
+var cine_game_t := 0.0         # 打中後過了多少遊戲時間（用來判斷敵人躺平了沒）
 var slowmo := 0.0             # 收尾後的短暫慢動作（剩餘秒數）
 var last_hit = null           # 剛被打中的敵人（命中停頓時讓它震動）
 var last_dir := Vector3.ZERO
@@ -82,8 +119,12 @@ var fps_now := 60.0
 var warmup := 2.5
 
 func _ready() -> void:
+	Engine.time_scale = 1.0        # 上一場如果停在慢動作（例如倒下重來），先恢復正常
 	TunePanel.load_saved()
 	Gore.load_saved()
+	RenderingServer.render_loop_enabled = true
+	var pcf := ConfigFile.new()
+	if pcf.load(POWER_PATH) == OK: eco = bool(pcf.get_value("power", "eco", false))
 	EnemyRig.lod_bias = 0.5      # 效能：遊戲鏡頭很遠，敵人提早換成面數較少的版本（對照過截圖，看不出差別）；動作檢視器是近看，維持原本的
 	sfx = Sfx.new()
 	add_child(sfx)
@@ -129,6 +170,9 @@ func _ready() -> void:
 	add_child(gore)
 	_build_hud()
 	_test_args()
+	if eco:
+		street.res_cap = ECO_RES
+		street.set_quality(street.quality)
 	_start_gate()
 
 # ---------------- 介面 ----------------
@@ -192,7 +236,7 @@ func _build_hud() -> void:
 	tune = TunePanel.new()
 	tune.offset_bottom = -94
 	root.add_child(tune)
-	for item in [["時段", _cycle_tod], ["天氣", _cycle_weather], ["畫質", _cycle_quality], ["速度", tune.toggle], ["血腥", _toggle_gore], ["檢視", _open_viewer], ["重整", HeroRig.reload_page.bind(get_tree())]]:
+	for item in [["時段", _cycle_tod], ["天氣", _cycle_weather], ["畫質", _cycle_quality], ["速度", tune.toggle], ["血腥", _toggle_gore], ["省電", _toggle_eco], ["檢視", _open_viewer], ["重整", HeroRig.reload_page.bind(get_tree())]]:
 		var b := Button.new()
 		b.text = item[0]
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -200,6 +244,10 @@ func _build_hud() -> void:
 		b.focus_mode = Control.FOCUS_NONE
 		b.pressed.connect(item[1])
 		row.add_child(b)
+		b.add_theme_font_size_override("font_size", 26)      # 按鈕變多了，字縮小一點才放得下
+		if item[0] == "省電":
+			eco_btn = b
+			b.text = "省電開" if eco else "省電關"
 		if item[0] == "血腥":
 			gore_btn = b
 			b.text = "血腥開" if Gore.enabled else "血腥關"
@@ -224,6 +272,25 @@ func _cycle_weather() -> void:
 	street.set_weather(order[(order.find(street.weather) + 1) % order.size()])
 
 # 血腥表現的開關（噴血、地上的血跡），設定會記住
+# 省電模式開關（設定會記住）：開＝每秒 30 格、3D 解析度有上限，手機比較不燙；關＝每秒最多 60 格、原本的解析度
+func _toggle_eco() -> void:
+	eco = not eco
+	var cf := ConfigFile.new()
+	cf.set_value("power", "eco", eco)
+	cf.save(POWER_PATH)
+	eco_btn.text = "省電開" if eco else "省電關"
+	street.res_cap = ECO_RES if eco else 0
+	street.set_quality(street.quality)
+
+# 限制每秒畫幾格：還沒到下一格該畫的時間，這一格就不畫（上一格的畫面留在螢幕上）
+func _limit_draw() -> void:
+	if not OS.get_cmdline_user_args().is_empty(): return      # 測試截圖時不限制
+	var gap := 1.0 / (ECO_FPS if eco else FPS_CAP)
+	draw_acc += real_dt
+	drew = draw_acc >= gap * 0.9
+	if drew: draw_acc = 0.0
+	RenderingServer.render_loop_enabled = drew
+
 func _toggle_gore() -> void:
 	Gore.set_enabled(not Gore.enabled)
 	gore_btn.text = "血腥開" if Gore.enabled else "血腥關"
@@ -234,6 +301,8 @@ func _cycle_quality() -> void:
 	street.set_quality((street.quality + 2) % 3)
 
 func _open_viewer() -> void:
+	RenderingServer.render_loop_enabled = true
+	Engine.time_scale = 1.0
 	get_tree().change_scene_to_file("res://viewer.tscn")
 
 # 量每秒畫面數；太低就自動降一級畫質
@@ -242,12 +311,12 @@ func _watch_fps(dt: float) -> void:
 		warmup -= dt
 		return
 	fps_t += dt
-	fps_n += 1
+	if drew: fps_n += 1        # 只算真的有畫出來的格數
 	if fps_t < 1.5: return
 	fps_now = fps_n / fps_t
 	fps_t = 0.0
 	fps_n = 0
-	if auto_quality and fps_now < 40.0 and street.quality > 0:
+	if auto_quality and fps_now < 25.0 and street.quality > 0:
 		street.set_quality(street.quality - 1)
 		warmup = 1.0
 
@@ -427,12 +496,19 @@ func _damage(e: Dictionary, amount: float, dir: Vector3, kb: float, level: int, 
 		ea.speed_scale = 1.0
 		ea.play("fall", 0.08, EnemyRig.FALL_SPEED)
 		ea.seek(EnemyRig.FALL_ENTER / 30.0, true)
-		bodies.append({"base": e.base, "node": e.node, "life": 2.6})
+		bodies.append({"base": e.base, "node": e.node, "life": 2.6, "t": 0.0, "from": e.pos, "dir": Vector3(dir.x, 0, dir.z).normalized(), "dist": FALL_FLY})
 
 func _update_bodies(dt: float) -> void:
 	for b in bodies:
 		var n: Node3D = b.node
 		b.life -= dt
+		# 被打倒的那一下往後飛出去約一個人的距離（使用者要求）：前半秒順著被打的方向滑出去、帶一點離地的弧度，
+		# 同時照常播倒下的動作，落地後就躺在那裡
+		b.t += dt
+		var k: float = 1.0 - pow(1.0 - minf(1.0, b.t / FALL_FLY_TIME), 3.0)
+		var hop: float = sin(PI * minf(1.0, b.t / (FALL_FLY_TIME * 0.8))) * 0.2
+		var at: Vector3 = (b.from as Vector3) + (b.dir as Vector3) * (b.dist as float) * k
+		n.position = Vector3(at.x, hop, at.z)
 		# 躺一會兒之後沉進地面消失
 		if b.life < 0.6: n.position.y = -(0.6 - b.life) / 0.6 * 0.5
 		if b.life <= 0.0: n.queue_free()
@@ -449,7 +525,7 @@ func _fx_mat(c: Color) -> StandardMaterial3D:
 # 命中特效：閃光 ＋ 順著出拳方向噴出去的光條；暴擊和收尾再加一圈地面震波
 func _impact_fx(pos: Vector3, dir: Vector3, level: int) -> void:
 	var f: Array = HIT_FEEL[level]
-	var size: float = f[4] * FX_SCALE
+	var size: float = f[4] * FX_SCALE * fx_mul
 	var col := Color(1.0, 0.82, 0.3) if level >= 2 else Color(1.0, 0.95, 0.82)
 	# 閃光
 	var flash := MeshInstance3D.new()
@@ -551,15 +627,34 @@ func _zone_enemies() -> Array:
 func _launch(zone: Array) -> void:
 	var move: String = HeroRig.COMBO[combo_i % HeroRig.COMBO.size()]
 	combo_i += 1
-	var finisher := move == "fly"
 	# 不管哪一招，一律打離主角最近的那一個
 	var target: Dictionary = zone[0]
+	# 終結鏡頭：這一波已經全部進場、場上只剩這一個、而且一拳打得倒（不算暴擊也夠）。
+	# 這最後一拳固定用正直拳（使用者指定），從肩膀後面看最清楚
+	var alive := 0
+	for e in enemies:
+		if not e.dead: alive += 1
+	var last: bool = cine == 0 and wave > 0 and spawn_left == 0 and alive == 1 and not close_cam and target.hp <= base_dmg
+	if last: move = "cross"
+	var finisher := move == "fly"
 	var tm := HeroRig.move_time(move)
 	anim.play(move, 0.07)
 	anim.seek(HeroRig.MOVES[move][4] / 30.0, true)
 	# 揮拳和踢腿的風聲不同
 	sfx.play("whoosh_kick" if move in ["round", "side", "fly"] else "whoosh", -7.0)
 	atk = {"move": move, "target": target, "t": 0.0, "wind": tm[0], "total": tm[1], "hit": false, "finisher": finisher}
+	if last:
+		cine = 1
+		cine_target = target
+		cine_skel = (target.node as Node3D).find_children("*", "Skeleton3D", true, false)[0]
+		cine_game_t = 0.0
+		cine_side = 0.0
+		cine_total = 0.0
+		cine_t = 0.0
+		cine_count += 1
+		atk["last"] = true
+		if cine_zoom: Engine.time_scale = CINE_WIND_SCALE      # 不拉近的版本要到打中的瞬間才開始慢動作
+		if not OS.get_cmdline_user_args().is_empty(): print("終結鏡頭觸發：遊戲時間 %.2f 秒，招式 %s" % [time, move])
 	in_idle = false
 
 func _update_combat(dt: float) -> void:
@@ -607,7 +702,24 @@ func _update_combat(dt: float) -> void:
 			var level := 3 if atk.finisher else (2 if crit else (1 if tg.mass >= 2.0 else 0))
 			# 敵人要一個一個解決：一拳只打一個目標，旁邊的不受影響；被打的也不會被推走，只原地頓一下，
 			# 血打完才倒下飛出去。把敵人彈開、震開一圈這類效果留給之後的技能（KNOCKBACK 預設幾乎是零）
+			if atk.get("last", false):
+				# 終結的一拳：用最重的打擊感（震動最大、噴最多），然後進入打中後的慢動作
+				level = 3
+				cine = 2
+				cine_t = 0.0
+				Engine.time_scale = CINE_HIT_SCALE if cine_zoom else CINE_FLAT_HIT
+				cine_total = 0.0
+				if cine_zoom:
+					fx_mul = 0.32
+					gore.size_mul = 0.4
 			if not tg.dead: _damage(tg, dmg, dir, KNOCKBACK, level)
+			fx_mul = 1.0
+			gore.size_mul = 1.0
+			if atk.get("last", false):
+				if not OS.get_cmdline_user_args().is_empty(): print("終結一拳打中：遊戲時間 %.2f 秒" % time)
+				hitstop = 0.05           # 慢動作下定格不用太久（換算成真實時間約 0.3 秒）
+				slowmo = 0.0
+				shake = 0.5
 		if atk.t >= atk.total: atk = null
 	else:
 		fix.foot_lock = true
@@ -627,7 +739,10 @@ func _keep_in_ring() -> void:
 		hero.position -= push
 
 func _process(delta: float) -> void:
-	_watch_fps(delta)
+	real_dt = minf(0.1, delta / maxf(0.05, Engine.time_scale))     # 慢動作時換算回真實時間
+	real_time += real_dt
+	_limit_draw()
+	_watch_fps(real_dt)
 	# 日夜循環：三分鐘一輪，光線、天空、燈火連續變化
 	if day_run: day_t += delta / DAY_LEN
 	street.set_time(day_t)
@@ -695,16 +810,79 @@ func _update_camera(dt: float) -> void:
 	shake = maxf(0.0, minf(0.5, shake) - dt * 2.2)
 	zoom_kick = maxf(0.0, zoom_kick - dt * 9.0)
 	# 沿出拳方向來回晃，再加一點垂直方向，不用隨機抖動（隨機抖動容易讓人不舒服）
-	var o := shake_dir * sin(time * 52.0) * shake + Vector2(-shake_dir.y, shake_dir.x) * sin(time * 37.0 + 1.3) * shake * 0.25
+	var st := time if cine == 0 else real_time      # 終結鏡頭的慢動作下，震動照真實時間的頻率，才是「震」不是「晃」
+	var o := shake_dir * sin(st * 52.0) * shake + Vector2(-shake_dir.y, shake_dir.x) * sin(st * 37.0 + 1.3) * shake * 0.25
+	_update_cine()
 	if close_cam:
 		cam.fov = 34.0
 		cam.position = hero.position + Vector3(2.2, 1.7, 4.2)
 		cam.look_at(hero.position + Vector3(0, 0.95, 0))
 	else:
 		# 鏡頭固定不跟隨，拉遠到整個攻擊圈和圈外等待的敵人都看得到；只有命中時的晃動和微微拉近
-		cam.fov = 40.0 - zoom_kick
-		cam.position = Vector3(o.x, 23.5, 19.0 + o.y)
-		cam.look_at(Vector3(0, 0, 0.6))
+		var far_pos := Vector3(o.x, 23.5, 19.0 + o.y)
+		var far_aim := Vector3(0, 0, 0.6)
+		if cine_mix <= 0.0:
+			cam.fov = 40.0 - zoom_kick
+			cam.position = far_pos
+			cam.look_at(far_aim)
+		else:
+			# 肩膀後面的位置：主角身後偏右、肩膀高度，看向敵人的胸口；震動幅度依近距離縮小
+			var right := cine_dir.cross(Vector3.UP).normalized()
+			var hw: Vector3 = skel.global_transform * skel.get_bone_pose_position(hips_bone)
+			# 敵人倒下時鏡頭往右上方移開一些（cine_side），不然躺在地上的敵人會被主角的身體擋住
+			var sd := cine_side * cine_side * (3.0 - 2.0 * cine_side)
+			var near_pos := Vector3(hw.x, 0, hw.z) - cine_dir * 1.75 + right * lerpf(0.62, 1.45, sd) + Vector3(0, lerpf(1.62, 2.15, sd), 0)
+			near_pos += (right * o.x + Vector3.UP * o.y) * 0.22
+			var k := cine_mix * cine_mix * (3.0 - 2.0 * cine_mix)
+			cam.fov = lerpf(40.0, 52.0, k) - zoom_kick * (1.0 - k)
+			cam.position = far_pos.lerp(near_pos, k)
+			cam.look_at(far_aim.lerp(cine_aim, k))
+
+# 終結鏡頭的進行：用真實時間計時（慢動作不影響鏡頭移動的速度）
+func _update_cine() -> void:
+	var rdt := real_dt
+	if cine == 0:
+		cine_mix = 0.0
+		return
+	cine_t += rdt
+	if cine == 2: cine_total += rdt
+	if not cine_zoom:
+		# 不拉近的版本：鏡頭留在原位，慢動作從出拳起算滿 CINE_FLAT_TIME 秒就恢復
+		cine_mix = 0.0
+		if cine != 3 and (cine_total >= CINE_FLAT_TIME or (cine == 1 and atk == null)):
+			cine = 3
+		if cine == 3:
+			Engine.time_scale = move_toward(Engine.time_scale, 1.0, rdt * 4.0)
+			if Engine.time_scale >= 1.0: cine = 0
+		return
+	if cine == 1 and cine_target != null:
+		var to: Vector3 = (cine_target.pos as Vector3) - hero.position
+		to.y = 0
+		if to.length() > 0.05: cine_dir = to.normalized()
+		cine_aim = (cine_target.pos as Vector3) + Vector3(0, 1.25, 0)
+	elif cine == 2 and is_instance_valid(cine_skel):
+		# 打中後鏡頭跟著敵人的身體（倒下時身體會往後退、往下躺），看著他倒到地上
+		var hw: Vector3 = cine_skel.global_transform * cine_skel.get_bone_pose_position(cine_skel.find_bone("Hips"))
+		cine_aim = cine_aim.lerp(hw + Vector3(0, 0.15, 0), minf(1.0, rdt * 5.0))
+	if cine == 1:
+		cine_mix = minf(1.0, cine_mix + rdt / 0.22)          # 很快拉近
+		if atk == null or cine_t > 3.0: cine = 3              # 保險：出招被中斷就直接拉回
+	elif cine == 2:
+		cine_mix = minf(1.0, cine_mix + rdt / 0.22)
+		# 先停在最慢的速度看打中的瞬間，再加快一些看敵人倒下；敵人躺平之後才切回原本的鏡頭
+		if cine_t >= CINE_HIT_HOLD: Engine.time_scale = move_toward(Engine.time_scale, CINE_FALL_SCALE, rdt * 0.9)
+		cine_game_t += rdt * Engine.time_scale
+		if cine_t >= CINE_HIT_HOLD: cine_side = minf(1.0, cine_side + rdt / 1.2)
+		var fall_len := (EnemyRig.FALL_DOWN - EnemyRig.FALL_ENTER) / 30.0 / EnemyRig.FALL_SPEED
+		if cine_game_t >= fall_len + CINE_AFTER or cine_t > 12.0:
+			cine = 3
+			cine_t = 0.0
+	if cine == 3:
+		Engine.time_scale = move_toward(Engine.time_scale, 1.0, rdt * 4.0)
+		cine_mix = maxf(0.0, cine_mix - rdt / 0.45)
+		if cine_mix <= 0.0:
+			cine = 0
+			Engine.time_scale = 1.0
 
 # ---------------- 測試用：命令列參數 ----------------
 # 例：godot --path . res://main.tscn -- --spawn=40 --god --shots=3,6　（--close 主角近照、--tod=dusk 指定時段）
@@ -714,9 +892,11 @@ func _test_args() -> void:
 	if not args.is_empty(): auto_quality = false   # 測試截圖時固定用高畫質
 	for a in args:
 		if a.begins_with("--lod="): EnemyRig.lod_bias = float(a.split("=")[1])
+		if a.begins_with("--seed="): seed(int(a.split("=")[1]))      # 固定亂數，測試才能重現（要放在 --spawn 前面）
 	for a in args:
 		if a == "--god": god = true
 		elif a == "--close": close_cam = true
+		elif a == "--cinezoom": cine_zoom = true      # 終結鏡頭用拉近到肩後的版本
 		elif a.begins_with("--weather="): street.set_weather(a.split("=")[1], true)
 		elif a.begins_with("--tod="):
 			# 指定時段並停住時間：day／dusk／night，或直接給 0～1 的數字
@@ -791,3 +971,20 @@ func _start_gate() -> void:
 		started = true
 		get_tree().paused = false
 		layer.queue_free())
+	# 技能測試場的入口：只在開場畫面出現（要再進去就按「重整」回到這個畫面）
+	var lab := Button.new()
+	lab.text = "技能測試場"
+	lab.add_theme_font_size_override("font_size", 40)
+	lab.add_theme_font_override("font", load("res://assets/fonts/NotoSansTC.ttf"))
+	lab.focus_mode = Control.FOCUS_NONE
+	lab.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	lab.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	lab.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	lab.offset_bottom = -220
+	lab.custom_minimum_size = Vector2(360, 110)
+	layer.add_child(lab)
+	lab.pressed.connect(func():
+		started = true
+		get_tree().paused = false
+		RenderingServer.render_loop_enabled = true
+		get_tree().change_scene_to_file("res://skill_lab.tscn"))

@@ -289,12 +289,12 @@ func _watch_fps(dt: float) -> void:
 		warmup -= dt
 		return
 	fps_t += dt
-	fps_n += 1
+	if drew: fps_n += 1
 	if fps_t < 1.5: return
 	fps_now = fps_n / fps_t
 	fps_t = 0.0
 	fps_n = 0
-	if auto_quality and street != null and street.visible and fps_now < 40.0 and street.quality > 0:
+	if auto_quality and street != null and street.visible and fps_now < 25.0 and street.quality > 0:
 		street.set_quality(street.quality - 1)
 		warmup = 1.0
 
@@ -395,7 +395,15 @@ func _unhandled_input(ev: InputEvent) -> void:
 		cam_yaw -= ev.relative.x * 0.008
 		cam_pitch = clampf(cam_pitch + ev.relative.y * 0.005, 0.0, 1.2)
 
+var draw_acc := 0.0
+var drew := true
 func _process(_dt: float) -> void:
+	# 跟遊戲一樣鎖定每秒最多畫 30 格（手機比較不燙）；帶測試參數啟動時不限制
+	if OS.get_cmdline_user_args().is_empty():
+		draw_acc += _dt
+		drew = draw_acc >= (1.0 / 30.0) * 0.9
+		if drew: draw_acc = 0.0
+		RenderingServer.render_loop_enabled = drew
 	_watch_fps(_dt)
 	_update_combo(_dt)
 	hit_flash = maxf(0.0, hit_flash - _dt)

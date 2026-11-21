@@ -12,6 +12,7 @@ const SPLAT_RATE := 0.55       # 落地的血滴有多少比例會留下血跡
 const SAVE_PATH := "user://gore.cfg"
 static var enabled := true
 
+var size_mul := 1.0            # 血滴與血霧的大小倍率（終結鏡頭是近看，要縮小）
 var drops: Array = []          # 飛行中的血滴：{p, v, s}
 var splats: Array = []         # 地上的血跡：{xf, t, a}
 var splat_i := 0
@@ -85,7 +86,7 @@ func burst(pos: Vector3, dir: Vector3, amount: int, power := 1.0) -> void:
 		if drops.size() >= MAX_DROPS: drops.pop_front()
 		var d := (dir + Vector3(randf_range(-0.55, 0.55), 0.0, randf_range(-0.55, 0.55))).normalized()
 		var v := d * randf_range(1.2, 4.6) * power + Vector3(0, randf_range(0.6, 3.6) * power, 0)
-		drops.append({"p": pos + Vector3(randf_range(-0.08, 0.08), randf_range(-0.1, 0.1), randf_range(-0.08, 0.08)), "v": v, "s": randf_range(0.06, 0.15), "mark": randf() < SPLAT_RATE})
+		drops.append({"p": pos + Vector3(randf_range(-0.08, 0.08), randf_range(-0.1, 0.1), randf_range(-0.08, 0.08)), "v": v, "s": randf_range(0.06, 0.15) * size_mul, "mark": randf() < SPLAT_RATE})
 
 # 命中瞬間的一團血霧：幾顆暗紅色的球從命中點順著出拳方向迅速膨脹、淡掉。
 # 光靠小血滴在遠鏡頭下不夠明顯（使用者要求噴血更明顯），這一團是讓人一眼看到「噴了」的主體
@@ -110,7 +111,7 @@ func _mist(pos: Vector3, dir: Vector3, power: float) -> void:
 		m.position = pos + d * 0.1
 		m.scale = Vector3.ONE * 0.18
 		add_child(m)
-		var size := randf_range(0.45, 0.8) * power
+		var size := randf_range(0.45, 0.8) * power * size_mul
 		var tw := create_tween()
 		tw.set_parallel(true)
 		tw.tween_property(m, "position", pos + d * randf_range(0.5, 1.1) * power, 0.22).set_ease(Tween.EASE_OUT)

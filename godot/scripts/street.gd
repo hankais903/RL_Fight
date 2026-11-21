@@ -688,12 +688,16 @@ func _apply(t: Dictionary) -> void:
 #   低：再關霓虹燈的光與光暈、陰影 1024、解析度六成
 	_apply_extra(t)
 
+var res_cap := 0                # 3D 畫面高度的上限（像素），0 是不限制
 func set_quality(q: int) -> void:
 	quality = clampi(q, 0, 2)
 	var vp := get_viewport()
 	if vp != null:
 		vp.msaa_3d = Viewport.MSAA_4X if quality >= 2 else Viewport.MSAA_DISABLED
-		vp.scaling_3d_scale = [0.6, 0.8, 1.0][quality]
+		var sc: float = [0.6, 0.8, 1.0][quality]
+		# 省電模式：3D 畫面的高度不超過 res_cap 像素（高解析度手機的螢幕動輒兩千多像素高，全部照算很耗電）
+		if res_cap > 0: sc *= minf(1.0, float(res_cap) / maxf(1.0, vp.get_visible_rect().size.y * vp.get_screen_transform().get_scale().y))
+		vp.scaling_3d_scale = sc
 	RenderingServer.directional_shadow_atlas_set_size([1024, 2048, 4096][quality], true)
 	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS if quality >= 2 else DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
 	env.glow_enabled = quality >= 1
